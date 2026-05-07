@@ -38,12 +38,17 @@ A mobile-first workforce OS that gives every employee one tap to clock in, reque
 
 ### 6. Fillable Forms (with Checklist mode)
 - **Form mode**: Admin builds custom templates with field types: text, textarea, date, number, checkbox, select, signature
-- **Checklist mode** *(NEW)*: For Aer Lingus-style truck-wash sheets and any recurring inspection list. Admin defines item rows (e.g. `HL 29 … HL 44`) and shared sub-tasks per row (e.g. `EXT, INT`). Bulk-add items by pasting one per line.
+- **Checklist mode**: For Aer Lingus-style truck-wash sheets and any recurring inspection list. Admin defines item rows (e.g. `HL 29 … HL 44`) and shared sub-tasks per row (e.g. `EXT, INT`). Bulk-add items by pasting one per line.
 - Staff fills as a table of checkboxes + Date + Notes; submission stored with composite keys (`HL29_EXT`, `HL29_INT`, …)
-- **Stats engine** *(NEW)*: `/api/forms/templates/{id}/stats?date_from=…&date_to=…` aggregates per-item per-sub-task counts across submissions, computes overall %, and flags **on-target / below-target** against the template's target %.
-- Admin Stats viewer with Day / Week / Month / All filters, overall progress bar (green if on target, red if below), and per-item breakdown.
-- Server generates printable PDF on demand via ReportLab
+- **Stats engine**: `/api/forms/templates/{id}/stats?date_from=…&date_to=…` aggregates per-item per-sub-task counts, computes overall %, flags **on-target / below-target** vs the template's target %.
+- Admin Stats viewer with Day / Week / Month / All filters, overall progress bar, per-item breakdown.
+- **CSV / PDF export** *(NEW)*: Stats can be exported via `/api/forms/templates/{id}/stats/export?format=csv|pdf`. Mobile uses `expo-file-system` + `expo-sharing` to invoke the native share sheet; web triggers a blob download.
+- Server generates printable PDF of individual submissions on demand via ReportLab.
 - **AI summary** of submitted forms (Emergent LLM Key + Claude Sonnet 4.5)
+
+### 8. Admin Alerts Dashboard *(NEW)*
+- `/api/admin/checklist-alerts` returns checklists that are below target today or have no submission yet today.
+- Home dashboard shows a red alert card (admin-only) listing each affected checklist with current % vs target. Tapping a row deep-links to the Admin Panel.
 
 ### 7. Admin Panel (modal route)
 - Tabs: Holidays, Shifts, Forms, Users
