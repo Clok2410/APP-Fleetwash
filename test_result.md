@@ -169,6 +169,18 @@ backend:
           agent: "testing"
           comment: "Re-tested case 5 only via /app/pdf_forms_flatten_test.py against public proxy URL. Main agent's fix verified: server.py:1520 now uses `NumberObject(existing | 1)` instead of `NameObject(str(1 << 0))`. Flow: admin login → upload reportlab AcroForm PDF (text full_name + checkbox accept + choice dept[Engineering,Operations,HR,Finance]) returned has_acroform=true, field_count=3 ✅; staff login → POST /pdf-forms/templates/{id}/fill with values={full_name:'Riley Thompson', accept:True, dept:'Operations'} and flatten=true → 200 OK ✅; response contains filled_pdf_base64 (7715 bytes) decoding to %PDF magic ✅; re-parsing with pypdf shows /V values match exactly: full_name='Riley Thompson', accept='/Yes', dept='Operations' ✅; sanity: all 3/3 widget annots have /Ff bit-0 (ReadOnly) set after flatten=true ✅. Cleanup DELETE 200. flatten=true path now fully functional."
 
+  - task: "Availability endpoints (set/list with role scoping)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: "Verified via /app/recurring_shifts_test.py against public proxy URL. POST /api/availability as staff with {date:'2030-07-15', available:false, note:'test unavailable'} returns 200 with correct fields (user_id, user_name, date, available=false, note, updated_at). POST same date again with {available:true, note:'now available'} correctly upserts (only one record exists for that date when re-fetched, with the new values). GET /api/availability as staff returns own records only (others_count=0 even after admin posted their own). GET /api/availability as admin (no all flag) returns admin's own only. GET /api/availability?all=true as admin returns both admin and staff records. GET /api/availability?all=true as staff is correctly scoped to staff's own records (all=true is admin-only)."
+
 frontend:
   - task: "Schedule shift card shows linked customer + pinned notes"
     implemented: true
@@ -192,6 +204,42 @@ frontend:
         - working: "NA"
           agent: "main"
           comment: "Admin: new 'PDF' tab with DocumentPicker upload, base64 read via FileSystem (web fallback uses ArrayBuffer→btoa). Staff: forms tab now lists PDF templates, opens PdfFormFillModal that renders detected fields as text/switch/chip inputs, submits to /pdf-forms/templates/{id}/fill, shows download/share button using expo-sharing. Submissions list now merges checklists + PDFs."
+  - task: "Recurring shifts (admin auto-generate series)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/frontend/app/admin.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "ShiftIn now accepts repeat_count (1-60). When recurring=daily/weekly, backend inserts multiple shifts in series with shared series_id, occurrence_index 0..N-1, dates offset by 1d/7d. Admin shift modal exposes Repeat (none/daily/weekly) and number-of-occurrences input."
+        - working: true
+          agent: "testing"
+          comment: "Verified backend portion via /app/recurring_shifts_test.py against public proxy URL. POST /api/shifts admin with recurring=daily, repeat_count=4 returned {created:4, series_id:<uuid>, first:{...}}; GET /api/shifts?all=true returned 4 shifts sharing the same series_id with start datetimes at +0d/+1d/+2d/+3d offsets and occurrence_index [0,1,2,3]. recurring=weekly, repeat_count=3 returned {created:3, series_id:<uuid>} and 3 shifts at +0d/+7d/+14d. recurring=none returned {created:1, series_id:null} (also verified omitting the field). Staff POST /api/shifts → 403 'Admin access required'. All 9 created shifts cleaned up via DELETE /api/shifts/{id} (200 each). Frontend admin.tsx not tested per instructions."
+  - task: "Availability marking (staff calendar + admin team view)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/schedule.tsx, /app/frontend/app/admin.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Backend /availability set/list already exists. Staff schedule has new 'Availability' tab with react-native-calendars Calendar — tap a date, mark unavailable/available with optional note. Admin Shifts tab now surfaces Pending Swap Requests (Approve/Reject) and Team Unavailability snapshot."
+  - task: "Holiday Calendar polish (range picker + admin team calendar)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/profile.tsx, /app/frontend/app/admin.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Replaced text date inputs with react-native-calendars period range picker on staff Holiday Request modal. Admin Holidays tab now shows multi-dot Team Holiday Calendar (per-user color, pending=amber, approved=user color) plus the existing approve/reject list."
 
 metadata:
   created_by: "main_agent"
@@ -217,3 +265,5 @@ agent_communication:
       message: "PDF Fillable Forms: 11/12 tests passed via /app/pdf_forms_test.py. CRITICAL BUG in flatten=true path of _fill_pdf (server.py): line `obj.update({NameObject(\"/Ff\"): NameObject(str(1 << 0))})` produces a NameObject(\"1\") which pypdf 6.x rejects (NameObject must start with '/'). Returns 500 'Incorrect first char in NameObject'. Fix: replace with `NumberObject(1)` (import NumberObject from pypdf.generic) since /Ff is a numeric flag, not a name. flatten=false works perfectly — text='John Doe', checkbox /V='/Yes', select 'Engineering' all verified by re-parsing the returned PDF. All other endpoints (CRUD, role scoping, cascade delete) behave as expected; pdf_base64 is correctly omitted from list payloads and filled_pdf_base64 omitted from submission lists; admin sees all submissions, staff sees only own, cross-user GET returns 403, staff POST/DELETE on templates returns 403."
     - agent: "testing"
       message: "Re-test of case 5 (POST /pdf-forms/templates/{id}/fill with flatten=true) PASSED via /app/pdf_forms_flatten_test.py against public proxy URL. Main agent's fix at server.py:1520 (NumberObject(existing | 1) instead of NameObject(str(1 << 0))) is correct. Verified end-to-end: admin uploads reportlab AcroForm PDF (text+checkbox+choice) → staff posts fill with flatten=true → 200 OK with filled_pdf_base64 decoding to %PDF; pypdf re-parse confirms /V values match inputs (full_name='Riley Thompson', accept='/Yes', dept='Operations'); all 3/3 widget annots have /Ff bit-0 (ReadOnly) set. Task 'PDF Fillable Forms (AcroForm parse + fill)' is now fully working."
+    - agent: "testing"
+      message: "Recurring shifts + Availability backend tests PASSED (29/29) via /app/recurring_shifts_test.py. POST /api/shifts admin: recurring=daily repeat_count=4 → {created:4, series_id, first}, GET ?all=true confirms 4 shifts share the series_id with starts at +0d/+1d/+2d/+3d and occurrence_index [0,1,2,3]; recurring=weekly repeat_count=3 → {created:3, series_id} with +0d/+7d/+14d offsets; recurring=none and omitted recurring → {created:1, series_id:null} (repeat_count ignored). Staff POST /api/shifts → 403. POST /api/availability upserts (POST same date with available:true overwrites earlier false; only one record persists). GET /api/availability scoped to caller; admin ?all=true returns both admin + staff records, while staff ?all=true is still limited to own. All 9 created shifts cleaned up via DELETE /api/shifts/{id}. Both 'Recurring shifts' and a new 'Availability endpoints' task marked working: true."

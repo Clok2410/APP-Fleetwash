@@ -13,6 +13,7 @@ import {
 import { useFocusEffect } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Calendar } from "react-native-calendars";
 import { api } from "../../src/api";
 import { useAuth } from "../../src/auth";
 import { colors, spacing, radius, typography } from "../../src/theme";
@@ -22,25 +23,30 @@ export default function ScheduleScreen() {
   const { user } = useAuth();
   const [shifts, setShifts] = useState<any[]>([]);
   const [swaps, setSwaps] = useState<any[]>([]);
+  const [availability, setAvailability] = useState<any[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [tab, setTab] = useState<"shifts" | "swaps">("shifts");
+  const [tab, setTab] = useState<"shifts" | "swaps" | "availability">("shifts");
   const [swapModal, setSwapModal] = useState<{ shiftId: string } | null>(null);
   const [users, setUsers] = useState<any[]>([]);
   const [swapTarget, setSwapTarget] = useState<string>("");
   const [swapReason, setSwapReason] = useState("");
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
   const [pinnedNotes, setPinnedNotes] = useState<Record<string, any[]>>({});
+  const [availDate, setAvailDate] = useState<string>("");
+  const [availNote, setAvailNote] = useState<string>("");
 
   const load = useCallback(async () => {
     try {
-      const [s, sw, u] = await Promise.all([
+      const [s, sw, u, av] = await Promise.all([
         api.get("/shifts"),
         api.get("/shifts/swaps"),
         api.get("/users"),
+        api.get("/availability"),
       ]);
       setShifts(s.data);
       setSwaps(sw.data);
       setUsers(u.data.filter((x: any) => x.id !== user?.id && x.role === "staff"));
+      setAvailability(av.data || []);
       // Fetch pinned notes for each unique customer linked to a shift
       const cIds = Array.from(new Set((s.data || []).map((x: any) => x.customer_id).filter(Boolean)));
       const noteMap: Record<string, any[]> = {};
@@ -104,6 +110,15 @@ export default function ScheduleScreen() {
         >
           <Text style={[styles.tabText, tab === "swaps" && styles.tabTextActive]}>
             Swaps · {swaps.length}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          testID="tab-availability"
+          onPress={() => setTab("availability")}
+          style={[styles.tab, tab === "availability" && styles.tabActive]}
+        >
+          <Text style={[styles.tabText, tab === "availability" && styles.tabTextActive]}>
+            Availability
           </Text>
         </TouchableOpacity>
       </View>
@@ -212,6 +227,112 @@ export default function ScheduleScreen() {
               </View>
             ))
           ))}
+
+        {tab === "availability" && (
+          <>
+            <Text style={[typography.small, { marginBottom: 8 }]}>
+              Tap a date below to mark yourself unavailable. Tap again to clear.
+            </Text>
+            <View style={{ borderRadius: radius.lg, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+              <Calendar
+                testID="availability-calendar"
+                onDayPress={(d: any) => {
+                  setAvailDate(d.dateString);
+                }}
+                markedDates={(() => {
+                  const m: any = {};
+                  availability.forEach((a) => {
+                    if (!a.available) {
+                      m[a.date] = { selected: true, selectedColor: colors.alert };
+                    }
+                  });
+                  if (availDate) {
+                    m[availDate] = {
+                      ...(m[availDate] || {}),
+                      selected: true,
+                      selectedColor: m[availDate]?.selectedColor || colors.primary,
+                      marked: true,
+                    };
+                  }
+                  return m;
+                })()}
+                theme={{
+                  todayTextColor: colors.brand,
+                  arrowColor: colors.primary,
+                  selectedDayBackgroundColor: colors.primary,
+                }}
+              />
+            </View>
+            {availDate ? (
+              <View style={{ marginTop: 12 }}>
+                <Text style={typography.label}>Selected: {availDate}</Text>
+                <TextInput
+                  testID="availability-note"
+                  style={styles.input}
+                  placeholder="Reason (optional, e.g. medical, family)"
+                  value={availNote}
+                  onChangeText={setAvailNote}
+                  placeholderTextColor={colors.textMuted}
+                />
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+                  <TouchableOpacity
+                    testID="availability-mark-off"
+                    style={[styles.btn, { backgroundColor: colors.alert }]}
+                    onPress={async () => {
+                      try {
+                        await api.post("/availability", {
+                          date: availDate,
+                          available: false,
+                          note: availNote || undefined,
+                        });
+                        setAvailNote("");
+                        setAvailDate("");
+                        await load();
+                      } catch (e: any) {
+                        Alert.alert("Error", e.response?.data?.detail || "Failed");
+                      }
+                    }}
+                  >
+                    <Text style={styles.btnPrimaryText}>Mark Unavailable</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    testID="availability-mark-on"
+                    style={[styles.btn, { backgroundColor: colors.success }]}
+                    onPress={async () => {
+                      try {
+                        await api.post("/availability", {
+                          date: availDate,
+                          available: true,
+                          note: undefined,
+                        });
+                        setAvailNote("");
+                        setAvailDate("");
+                        await load();
+                      } catch (e: any) {
+                        Alert.alert("Error", e.response?.data?.detail || "Failed");
+                      }
+                    }}
+                  >
+                    <Text style={styles.btnPrimaryText}>Mark Available</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+            {availability.filter((a) => !a.available).length > 0 && (
+              <View style={{ marginTop: 16 }}>
+                <Text style={typography.label}>Your unavailable days</Text>
+                {availability.filter((a) => !a.available).map((a, i) => (
+                  <View key={i} style={[styles.shiftCard, { paddingVertical: 8 }]}>
+                    <View style={styles.shiftLeft}>
+                      <Text style={[typography.small, { fontWeight: "700", color: colors.primary }]}>{a.date}</Text>
+                      {a.note ? <Text style={typography.small}>{a.note}</Text> : null}
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </>
+        )}
       </ScrollView>
 
       <Modal visible={!!swapModal} animationType="slide" transparent onRequestClose={() => setSwapModal(null)}>

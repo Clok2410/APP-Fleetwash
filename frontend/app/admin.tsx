@@ -20,6 +20,7 @@ import FormBuilderModal from "../src/components/FormBuilderModal";
 import StatsModal from "../src/components/StatsModal";
 import OffsiteMap from "../src/components/OffsiteMap";
 import CustomerModal from "../src/components/CustomerModal";
+import { Calendar } from "react-native-calendars";
 
 export default function AdminScreen() {
   const router = useRouter();
@@ -63,6 +64,10 @@ export default function AdminScreen() {
   const [sLoc, setSLoc] = useState("");
   const [sCustomerId, setSCustomerId] = useState("");
   const [sSiteId, setSSiteId] = useState("");
+  const [sRecurring, setSRecurring] = useState<"none" | "daily" | "weekly">("none");
+  const [sRepeat, setSRepeat] = useState("4");
+  const [swaps, setSwaps] = useState<any[]>([]);
+  const [availability, setAvailability] = useState<any[]>([]);
 
   const [formModal, setFormModal] = useState(false);
   const [statsTpl, setStatsTpl] = useState<any>(null);
@@ -80,7 +85,7 @@ export default function AdminScreen() {
       if (offUser) offsiteParams.user_id = offUser;
       if (offFrom) offsiteParams.date_from = offFrom;
       if (offTo) offsiteParams.date_to = offTo;
-      const [h, u, s, t, d, o, cust, pft] = await Promise.all([
+      const [h, u, s, t, d, o, cust, pft, sw, av] = await Promise.all([
         api.get("/holidays/requests", { params: { all: true } }),
         api.get("/users"),
         api.get("/shifts", { params: { all: true } }),
@@ -89,6 +94,8 @@ export default function AdminScreen() {
         api.get("/admin/off-site-clock-ins", { params: offsiteParams }).catch(() => ({ data: [] })),
         api.get("/customers").catch(() => ({ data: [] })),
         api.get("/pdf-forms/templates").catch(() => ({ data: [] })),
+        api.get("/shifts/swaps").catch(() => ({ data: [] })),
+        api.get("/availability", { params: { all: true } }).catch(() => ({ data: [] })),
       ]);
       setHolidays(h.data);
       setUsers(u.data);
@@ -98,6 +105,8 @@ export default function AdminScreen() {
       setOffsite(o.data || []);
       setCustomers(cust.data || []);
       setPdfTemplates(pft.data || []);
+      setSwaps(sw.data || []);
+      setAvailability(av.data || []);
     } catch {}
   }, [offDepot, offUser, offFrom, offTo]);
 
@@ -163,7 +172,7 @@ export default function AdminScreen() {
   const createShift = async () => {
     if (!sUser || !sTitle || !sStart || !sEnd) return Alert.alert("Missing info", "All fields required");
     try {
-      await api.post("/shifts", {
+      const { data } = await api.post("/shifts", {
         user_id: sUser,
         title: sTitle,
         start: sStart,
@@ -171,10 +180,25 @@ export default function AdminScreen() {
         location: sLoc,
         customer_id: sCustomerId || undefined,
         site_id: sSiteId || undefined,
+        recurring: sRecurring,
+        repeat_count: sRecurring === "none" ? 1 : Math.max(1, Math.min(60, parseInt(sRepeat || "1", 10) || 1)),
       });
       setShiftModal(false);
       setSUser(""); setSTitle(""); setSStart(""); setSEnd(""); setSLoc("");
       setSCustomerId(""); setSSiteId("");
+      setSRecurring("none"); setSRepeat("4");
+      await load();
+      if ((data?.created || 0) > 1) {
+        Alert.alert("Series created", `Generated ${data.created} shifts (${sRecurring}).`);
+      }
+    } catch (e: any) {
+      Alert.alert("Error", e.response?.data?.detail || "Failed");
+    }
+  };
+
+  const decideSwap = async (id: string, decision: "approved" | "rejected") => {
+    try {
+      await api.post(`/shifts/swaps/${id}/decision`, null, { params: { decision } });
       await load();
     } catch (e: any) {
       Alert.alert("Error", e.response?.data?.detail || "Failed");
@@ -282,27 +306,84 @@ export default function AdminScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.list}>
-        {tab === "holidays" &&
-          holidays.map((h) => (
-            <View key={h.id} style={styles.card}>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontWeight: "700", color: colors.primary }}>{h.user_name}</Text>
-                <Text style={typography.small}>{h.start_date} → {h.end_date} · {h.type}</Text>
-                {h.reason ? <Text style={typography.small}>{h.reason}</Text> : null}
-                <Text style={[typography.small, { marginTop: 4, fontWeight: "700" }]}>{h.status?.toUpperCase()}</Text>
-              </View>
-              {h.status === "pending" && (
-                <View style={{ gap: 6 }}>
-                  <TouchableOpacity style={[styles.smBtn, { backgroundColor: colors.success }]} onPress={() => decideHoliday(h.id, "approved")}>
-                    <Feather name="check" size={14} color="#fff" />
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[styles.smBtn, { backgroundColor: colors.alert }]} onPress={() => decideHoliday(h.id, "rejected")}>
-                    <Feather name="x" size={14} color="#fff" />
-                  </TouchableOpacity>
-                </View>
-              )}
+        {tab === "holidays" && (
+          <>
+            {/* Team Holiday Calendar */}
+            <Text style={[typography.label, { marginBottom: 6 }]}>Team Holiday Calendar</Text>
+            <View style={{ borderRadius: radius.lg, overflow: "hidden", borderWidth: 1, borderColor: colors.border, backgroundColor: "#fff" }}>
+              <Calendar
+                testID="admin-holiday-calendar"
+                markingType="multi-dot"
+                markedDates={(() => {
+                  const m: any = {};
+                  const palette = ["#10B981", "#F59E0B", "#3B82F6", "#EC4899", "#8B5CF6", "#EF4444"];
+                  const userColor: Record<string, string> = {};
+                  let idx = 0;
+                  holidays.forEach((h) => {
+                    if (h.status === "rejected") return;
+                    if (!userColor[h.user_id]) {
+                      userColor[h.user_id] = palette[idx % palette.length];
+                      idx += 1;
+                    }
+                    const c = userColor[h.user_id];
+                    try {
+                      const sD = new Date(h.start_date);
+                      const eD = new Date(h.end_date);
+                      const cur = new Date(sD);
+                      while (cur <= eD) {
+                        const ds = cur.toISOString().slice(0, 10);
+                        if (!m[ds]) m[ds] = { dots: [] };
+                        m[ds].dots.push({
+                          color: h.status === "approved" ? c : "#FBBF24",
+                          key: `${h.id}-${ds}`,
+                        });
+                        cur.setDate(cur.getDate() + 1);
+                      }
+                    } catch {}
+                  });
+                  return m;
+                })()}
+                theme={{ todayTextColor: colors.brand, arrowColor: colors.primary }}
+              />
             </View>
-          ))}
+            <View style={{ flexDirection: "row", alignItems: "center", marginTop: 6, gap: 12 }}>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#10B981", marginRight: 4 }} />
+                <Text style={typography.small}>Approved</Text>
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#FBBF24", marginRight: 4 }} />
+                <Text style={typography.small}>Pending</Text>
+              </View>
+            </View>
+
+            <Text style={[typography.label, { marginTop: 16, marginBottom: 6 }]}>Requests</Text>
+            {holidays.length === 0 ? (
+              <Text style={[typography.small, { color: colors.textMuted }]}>No requests yet.</Text>
+            ) : (
+              holidays.map((h) => (
+                <View key={h.id} style={styles.card}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontWeight: "700", color: colors.primary }}>{h.user_name}</Text>
+                    <Text style={typography.small}>{h.start_date} → {h.end_date} · {h.type}</Text>
+                    {h.reason ? <Text style={typography.small}>{h.reason}</Text> : null}
+                    <Text style={[typography.small, { marginTop: 4, fontWeight: "700" }]}>{h.status?.toUpperCase()}</Text>
+                  </View>
+                  {h.status === "pending" && (
+                    <View style={{ gap: 6 }}>
+                      <TouchableOpacity style={[styles.smBtn, { backgroundColor: colors.success }]} onPress={() => decideHoliday(h.id, "approved")}>
+                        <Feather name="check" size={14} color="#fff" />
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.smBtn, { backgroundColor: colors.alert }]} onPress={() => decideHoliday(h.id, "rejected")}>
+                        <Feather name="x" size={14} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+              ))
+            )}
+          </>
+        )}
 
         {tab === "shifts" && (
           <>
@@ -310,10 +391,69 @@ export default function AdminScreen() {
               <Feather name="plus" size={16} color="#fff" />
               <Text style={styles.addCtaText}>Assign New Shift</Text>
             </TouchableOpacity>
+
+            {/* Pending swap requests */}
+            {swaps.filter((s) => s.status === "pending").length > 0 && (
+              <>
+                <Text style={[typography.label, { marginTop: 8 }]}>Swap Requests</Text>
+                {swaps.filter((s) => s.status === "pending").map((sw) => (
+                  <View key={sw.id} style={styles.card} testID={`swap-${sw.id}`}>
+                    <View style={[styles.smBtn, { backgroundColor: "#FEF3C7", width: 36, height: 36, borderRadius: 18 }]}>
+                      <Feather name="repeat" size={16} color="#92400E" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontWeight: "700", color: colors.primary }}>
+                        {sw.from_user_name} → {sw.to_user_name}
+                      </Text>
+                      {sw.reason ? <Text style={typography.small}>{sw.reason}</Text> : null}
+                    </View>
+                    <View style={{ flexDirection: "row", gap: 6 }}>
+                      <TouchableOpacity
+                        testID={`swap-approve-${sw.id}`}
+                        style={[styles.smBtn, { backgroundColor: colors.success }]}
+                        onPress={() => decideSwap(sw.id, "approved")}
+                      >
+                        <Feather name="check" size={14} color="#fff" />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        testID={`swap-reject-${sw.id}`}
+                        style={[styles.smBtn, { backgroundColor: colors.alert }]}
+                        onPress={() => decideSwap(sw.id, "rejected")}
+                      >
+                        <Feather name="x" size={14} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+              </>
+            )}
+
+            {/* Team availability snapshot */}
+            {availability.filter((a) => !a.available).length > 0 && (
+              <>
+                <Text style={[typography.label, { marginTop: 8 }]}>Team Unavailability</Text>
+                <View style={[styles.card, { flexDirection: "column", alignItems: "stretch" }]}>
+                  {availability.filter((a) => !a.available).slice(0, 8).map((a, i) => (
+                    <View key={i} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 4 }}>
+                      <Feather name="user-x" size={12} color={colors.alert} />
+                      <Text style={[typography.small, { marginLeft: 6, flex: 1 }]}>
+                        {a.user_name} · {a.date}
+                        {a.note ? ` · ${a.note}` : ""}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </>
+            )}
+
+            <Text style={[typography.label, { marginTop: 8 }]}>All Shifts</Text>
             {allShifts.map((s) => (
               <View key={s.id} style={styles.card}>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontWeight: "700", color: colors.primary }}>{s.title}</Text>
+                  <Text style={{ fontWeight: "700", color: colors.primary }}>
+                    {s.title}
+                    {s.recurring && s.recurring !== "none" ? ` · ${s.recurring}` : ""}
+                  </Text>
                   <Text style={typography.small}>{s.user_name} · {s.start?.slice(0, 16)} → {s.end?.slice(11, 16)}</Text>
                 </View>
                 <TouchableOpacity onPress={async () => { await api.delete(`/shifts/${s.id}`); await load(); }}>
@@ -693,10 +833,38 @@ export default function AdminScreen() {
               </>
             )}
             <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <Text style={[typography.label]}>Repeat</Text>
+            </View>
+            <View style={{ flexDirection: "row", gap: 6, marginTop: 4 }}>
+              {(["none", "daily", "weekly"] as const).map((r) => (
+                <TouchableOpacity
+                  key={r}
+                  testID={`shift-repeat-${r}`}
+                  style={[styles.typeChip, sRecurring === r && { backgroundColor: colors.primary }]}
+                  onPress={() => setSRecurring(r)}
+                >
+                  <Text style={{ color: sRecurring === r ? "#fff" : colors.primary, fontWeight: "600", fontSize: 12 }}>
+                    {r}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {sRecurring !== "none" && (
+              <TextInput
+                testID="shift-repeat-count"
+                style={styles.input}
+                placeholder="Number of occurrences (e.g. 4)"
+                value={sRepeat}
+                onChangeText={setSRepeat}
+                keyboardType="numeric"
+                placeholderTextColor={colors.textMuted}
+              />
+            )}
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
               <TouchableOpacity style={[styles.modalBtn, { backgroundColor: colors.surface }]} onPress={() => setShiftModal(false)}>
                 <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: colors.primary }]} onPress={createShift}>
+              <TouchableOpacity testID="shift-assign-submit" style={[styles.modalBtn, { backgroundColor: colors.primary }]} onPress={createShift}>
                 <Text style={{ color: "#fff", fontWeight: "700" }}>Assign</Text>
               </TouchableOpacity>
             </View>

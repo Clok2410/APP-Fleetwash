@@ -13,6 +13,7 @@ import {
 import { useFocusEffect, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Calendar } from "react-native-calendars";
 import { api } from "../../src/api";
 import { useAuth } from "../../src/auth";
 import { colors, spacing, radius, typography } from "../../src/theme";
@@ -200,24 +201,67 @@ export default function ProfileScreen() {
                 </TouchableOpacity>
               ))}
             </View>
+            <Text style={[typography.small, { marginTop: spacing.md, marginBottom: 6 }]}>
+              {start && end
+                ? `Selected: ${start} → ${end}`
+                : start
+                ? `Start: ${start}. Now tap an end date.`
+                : "Tap a start date, then an end date."}
+            </Text>
+            <View style={{ borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+              <Calendar
+                testID="holiday-calendar"
+                onDayPress={(d: any) => {
+                  if (!start || (start && end)) {
+                    setStart(d.dateString);
+                    setEnd("");
+                  } else if (d.dateString < start) {
+                    setStart(d.dateString);
+                  } else {
+                    setEnd(d.dateString);
+                  }
+                }}
+                markingType="period"
+                markedDates={(() => {
+                  const m: any = {};
+                  if (start && !end) {
+                    m[start] = { startingDay: true, endingDay: true, color: colors.primary, textColor: "#fff" };
+                  } else if (start && end) {
+                    const sD = new Date(start);
+                    const eD = new Date(end);
+                    const cur = new Date(sD);
+                    while (cur <= eD) {
+                      const ds = cur.toISOString().slice(0, 10);
+                      m[ds] = {
+                        color: colors.primary,
+                        textColor: "#fff",
+                        startingDay: ds === start,
+                        endingDay: ds === end,
+                      };
+                      cur.setDate(cur.getDate() + 1);
+                    }
+                  }
+                  return m;
+                })()}
+                theme={{
+                  todayTextColor: colors.brand,
+                  arrowColor: colors.primary,
+                }}
+              />
+            </View>
+            {start && end ? (
+              <TouchableOpacity
+                onPress={() => {
+                  setStart("");
+                  setEnd("");
+                }}
+                style={{ alignSelf: "flex-end", marginTop: 6 }}
+              >
+                <Text style={{ color: colors.primary, fontWeight: "600", fontSize: 12 }}>Clear range</Text>
+              </TouchableOpacity>
+            ) : null}
             <TextInput
-              testID="holiday-start"
-              style={styles.input}
-              placeholder="Start date (YYYY-MM-DD)"
-              value={start}
-              onChangeText={setStart}
-              placeholderTextColor={colors.textMuted}
-            />
-            <TextInput
-              testID="holiday-end"
-              style={styles.input}
-              placeholder="End date (YYYY-MM-DD)"
-              value={end}
-              onChangeText={setEnd}
-              placeholderTextColor={colors.textMuted}
-            />
-            <TextInput
-              style={[styles.input, { height: 80 }]}
+              style={[styles.input, { height: 64, marginTop: spacing.sm }]}
               placeholder="Reason (optional)"
               value={reason}
               onChangeText={setReason}

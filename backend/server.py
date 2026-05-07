@@ -131,6 +131,7 @@ class ShiftIn(BaseModel):
     end: str
     notes: Optional[str] = None
     recurring: Optional[str] = None  # daily|weekly|none
+    repeat_count: Optional[int] = 1  # how many shifts to generate (incl. first)
     customer_id: Optional[str] = None
     site_id: Optional[str] = None
 
@@ -521,24 +522,45 @@ async def create_shift(body: ShiftIn, _=Depends(require_admin)):
                 site = next((s for s in c.get("sites", []) if s["id"] == body.site_id), None)
                 if site:
                     site_name = site["name"]
-    shift = {
-        "id": str(uuid.uuid4()),
-        "user_id": body.user_id,
-        "user_name": user["name"],
-        "title": body.title,
-        "location": body.location,
-        "start": body.start,
-        "end": body.end,
-        "notes": body.notes,
-        "recurring": body.recurring or "none",
-        "customer_id": body.customer_id,
-        "customer_name": customer_name,
-        "site_id": body.site_id,
-        "site_name": site_name,
-        "created_at": now_utc(),
-    }
-    await db.shifts.insert_one(shift)
-    return serialize(shift)
+
+    # Determine occurrences (recurring)
+    rec = (body.recurring or "none").lower()
+    occurrences = max(1, min(int(body.repeat_count or 1), 60)) if rec in ("daily", "weekly") else 1
+    delta_days = 1 if rec == "daily" else 7 if rec == "weekly" else 0
+
+    try:
+        start_dt = datetime.fromisoformat(body.start.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(body.end.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid start/end ISO datetime")
+
+    series_id = str(uuid.uuid4()) if occurrences > 1 else None
+    inserts: List[dict] = []
+    for i in range(occurrences):
+        offset = timedelta(days=delta_days * i)
+        s_iso = (start_dt + offset).isoformat()
+        e_iso = (end_dt + offset).isoformat()
+        inserts.append({
+            "id": str(uuid.uuid4()),
+            "user_id": body.user_id,
+            "user_name": user["name"],
+            "title": body.title,
+            "location": body.location,
+            "start": s_iso,
+            "end": e_iso,
+            "notes": body.notes,
+            "recurring": rec,
+            "series_id": series_id,
+            "occurrence_index": i,
+            "customer_id": body.customer_id,
+            "customer_name": customer_name,
+            "site_id": body.site_id,
+            "site_name": site_name,
+            "created_at": now_utc(),
+        })
+    if inserts:
+        await db.shifts.insert_many(inserts)
+    return {"created": len(inserts), "series_id": series_id, "first": serialize(inserts[0]) if inserts else None}
 
 
 @api.get("/shifts")
