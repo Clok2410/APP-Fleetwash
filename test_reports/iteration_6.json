@@ -1,0 +1,36 @@
+{
+  "summary": "Iter 6 retest (frontend only) — verified Iter 5 fixes in /app/frontend/app/admin.tsx. (1) Off-site tab now renders correctly: 5 rows, each with testID=offsite-{id}, showing user_name, distance_m, depot_name, lat/lng, and clock_in timestamp; 5 Map buttons with testID=map-{id} present. (2) Tapping a Map button fires Linking.openURL which on web maps to window.open — captured 'https://www.google.com/maps?q=0,-30' for the first row → no crash, request initiated. (3) Send Weekly Digest API returns 200 with new shape {ok, mocked: true, recipients[], bundles:[{depot_name, filename}], digest_ids[]}. The admin.tsx sendDigest handler correctly maps data.bundles into '• {depot}: {filename}' lines with a MOCKED prefix when data.mocked is true (verified by static code review at lines 97-113); no JS crash on click. RN-web Alert.alert does not surface as window.alert nor as a DOM dialog in headless Playwright, which prevented direct UI capture of the alert text — but API + handler logic is correct. Backend was 13/13 in Iter 5 and was not re-run (frontend-only request).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "admin → offsite tab", "issues": ["distance_m values like 6324585.2m are unformatted; consider showing >5km in km, but functional and not a bug per spec"]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter5_offsite_perdepot_digest.py",
+    "/app/test_reports/pytest/iter5_results.xml"
+  ],
+  "action_items": [
+    "(Optional/cosmetic) Format distance >1000m as km in off-site rows for readability.",
+    "(Optional) Seed at least one depot-tied checklist template so weekly-digest bundles[] returns more than the 'Unassigned' bundle by default — current DB state only produces 1 bundle so the per-depot list is technically valid but minimal."
+  ],
+  "critical_code_review_comments": [
+    "admin.tsx now contains the full offsite render block (lines 311-345) with empty-state handling for offsite.length===0 and per-row Map button using openInMaps(lat, lng).",
+    "openInMaps() correctly uses Platform.select to choose Apple Maps on iOS and Google Maps elsewhere — verified Google URL fired on web.",
+    "sendDigest correctly constructs bundleSummary with fallback '(no bundles)' and includes MOCKED indicator from data.mocked.",
+    "server.py still 1281 lines; recommend splitting in a future iteration (carryover from Iter 5)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (13/13 from Iter 5, not re-run)", "frontend": "100% — off-site rows render, Map buttons present, Linking.openURL fires, digest API + handler correct"},
+  "seed_data_creation": "Reused 5 existing off-site clock-in entries from Iter 5 seed data; no new seeding performed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Both Iter 5 fixes are now verified in production preview at https://b863035e-804d-4d41-9158-321900c27687.preview.emergentagent.com. Off-site tab functional with 5 rows. Linking.openURL captured via window.open intercept. Digest alert content cannot be directly captured in headless web because RN-web's Alert.alert renders neither via window.alert nor a visible DOM modal — verified instead by intercepting the POST /api/admin/weekly-digest response (200, bundles[]) and confirming no JS error and no stuck loading state after click. To capture Alert text in future, consider replacing Alert.alert with a custom in-app modal or use Toast component for testability.",
+  "rca_of_issue": "Iter 5 root causes (missing offsite JSX block + stale data.filename reference) are both resolved. Reproduction verified: login as admin@company.com → tap Admin → admin-tab-offsite renders LAST 14 DAYS heading + 5 rows with Map buttons; tapping Map fires Google Maps URL via Linking.openURL → window.open. No further action required."
+}

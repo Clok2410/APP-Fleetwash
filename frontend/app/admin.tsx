@@ -98,9 +98,12 @@ export default function AdminScreen() {
     setDigestBusy(true);
     try {
       const { data } = await api.post("/admin/weekly-digest");
+      const bundleSummary = (data.bundles || [])
+        .map((b: any) => `• ${b.depot_name}: ${b.filename}`)
+        .join("\n") || "(no bundles)";
       Alert.alert(
         "Digest generated",
-        `${data.mocked ? "MOCKED — no API key set." : "Sent."} Recipients: ${(data.recipients || []).join(", ")}\nFile: ${data.filename}`
+        `${data.mocked ? "MOCKED — no RESEND_API_KEY set." : "Sent."}\nRecipients: ${(data.recipients || []).join(", ")}\n\n${bundleSummary}`
       );
     } catch (e: any) {
       Alert.alert("Error", e.response?.data?.detail || "Failed");
@@ -302,6 +305,42 @@ export default function AdminScreen() {
                 </TouchableOpacity>
               </View>
             ))}
+          </>
+        )}
+
+        {tab === "offsite" && (
+          <>
+            <Text style={[typography.label, { marginBottom: 8 }]}>Last 14 days</Text>
+            {offsite.length === 0 ? (
+              <Text style={typography.body}>✓ No off-site clock-ins.</Text>
+            ) : (
+              offsite.map((e) => (
+                <View key={e.id} style={styles.card} testID={`offsite-${e.id}`}>
+                  <View style={[styles.smBtn, { backgroundColor: "#FEE2E2", width: 36, height: 36, borderRadius: 18 }]}>
+                    <Feather name="map-pin" size={16} color={colors.alert} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontWeight: "700", color: colors.primary }}>{e.user_name}</Text>
+                    <Text style={typography.small}>
+                      {e.distance_m}m from {e.depot_name || "any depot"} · {new Date(e.clock_in).toLocaleString()}
+                    </Text>
+                    <Text style={[typography.small, { color: colors.textMuted }]}>
+                      {e.lat?.toFixed?.(4)}, {e.lng?.toFixed?.(4)}
+                    </Text>
+                  </View>
+                  {e.lat != null && e.lng != null && (
+                    <TouchableOpacity
+                      testID={`map-${e.id}`}
+                      onPress={() => openInMaps(e.lat, e.lng)}
+                      style={[styles.smBtn, { backgroundColor: colors.brand, width: 64, borderRadius: 14 }]}
+                    >
+                      <Feather name="map" size={14} color="#fff" />
+                      <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 4 }}>Map</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ))
+            )}
           </>
         )}
       </ScrollView>
