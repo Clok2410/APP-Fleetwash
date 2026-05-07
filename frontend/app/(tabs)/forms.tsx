@@ -169,7 +169,11 @@ export default function FormsScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardTitle}>{t.title}</Text>
                   {t.description ? <Text style={typography.small}>{t.description}</Text> : null}
-                  <Text style={[typography.small, { marginTop: 4 }]}>{t.fields?.length || 0} fields</Text>
+                  <Text style={[typography.small, { marginTop: 4 }]}>
+                    {t.kind === "checklist"
+                      ? `${(t.checklist_items || []).length} items · target ${t.target_percent || 100}%`
+                      : `${t.fields?.length || 0} fields`}
+                  </Text>
                 </View>
                 <Feather name="chevron-right" size={18} color={colors.textMuted} />
               </TouchableOpacity>

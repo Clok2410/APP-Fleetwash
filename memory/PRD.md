@@ -36,10 +36,13 @@ A mobile-first workforce OS that gives every employee one tap to clock in, reque
 - Upload files (base64, ≤5MB) via DocumentPicker
 - File browsing, preview metadata, deletion
 
-### 6. Fillable Forms
-- Admin builds custom templates with field types: text, textarea, date, number, checkbox, select, signature
-- Staff fills and submits
-- Server generates printable PDF on demand (`/api/forms/submissions/{id}/pdf` via ReportLab)
+### 6. Fillable Forms (with Checklist mode)
+- **Form mode**: Admin builds custom templates with field types: text, textarea, date, number, checkbox, select, signature
+- **Checklist mode** *(NEW)*: For Aer Lingus-style truck-wash sheets and any recurring inspection list. Admin defines item rows (e.g. `HL 29 … HL 44`) and shared sub-tasks per row (e.g. `EXT, INT`). Bulk-add items by pasting one per line.
+- Staff fills as a table of checkboxes + Date + Notes; submission stored with composite keys (`HL29_EXT`, `HL29_INT`, …)
+- **Stats engine** *(NEW)*: `/api/forms/templates/{id}/stats?date_from=…&date_to=…` aggregates per-item per-sub-task counts across submissions, computes overall %, and flags **on-target / below-target** against the template's target %.
+- Admin Stats viewer with Day / Week / Month / All filters, overall progress bar (green if on target, red if below), and per-item breakdown.
+- Server generates printable PDF on demand via ReportLab
 - **AI summary** of submitted forms (Emergent LLM Key + Claude Sonnet 4.5)
 
 ### 7. Admin Panel (modal route)
