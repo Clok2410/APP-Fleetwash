@@ -220,26 +220,43 @@ frontend:
           comment: "Verified backend portion via /app/recurring_shifts_test.py against public proxy URL. POST /api/shifts admin with recurring=daily, repeat_count=4 returned {created:4, series_id:<uuid>, first:{...}}; GET /api/shifts?all=true returned 4 shifts sharing the same series_id with start datetimes at +0d/+1d/+2d/+3d offsets and occurrence_index [0,1,2,3]. recurring=weekly, repeat_count=3 returned {created:3, series_id:<uuid>} and 3 shifts at +0d/+7d/+14d. recurring=none returned {created:1, series_id:null} (also verified omitting the field). Staff POST /api/shifts → 403 'Admin access required'. All 9 created shifts cleaned up via DELETE /api/shifts/{id} (200 each). Frontend admin.tsx not tested per instructions."
   - task: "Availability marking (staff calendar + admin team view)"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/frontend/app/(tabs)/schedule.tsx, /app/frontend/app/admin.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: "NA"
           agent: "main"
-          comment: "Backend /availability set/list already exists. Staff schedule has new 'Availability' tab with react-native-calendars Calendar — tap a date, mark unavailable/available with optional note. Admin Shifts tab now surfaces Pending Swap Requests (Approve/Reject) and Team Unavailability snapshot."
+          comment: "Backend /availability set/list already exists. Staff schedule has new 'Availability' tab with react-native-calendars Calendar — tap a date, mark unavailable/available with optional note."
+        - working: true
+          agent: "testing"
+          comment: "Frontend smoke verified at mobile viewport 390x844: tabs Shifts/Swaps/Availability all visible; tab-availability opens react-native-calendars (testID availability-calendar). Tapped day 27 → note input + Mark Unavailable button rendered; submit succeeded and 'Your unavailable days' section appeared. Re-tapped same date → Mark Available button shown and toggling back worked. No regressions."
   - task: "Holiday Calendar polish (range picker + admin team calendar)"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/frontend/app/(tabs)/profile.tsx, /app/frontend/app/admin.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: "NA"
           agent: "main"
-          comment: "Replaced text date inputs with react-native-calendars period range picker on staff Holiday Request modal. Admin Holidays tab now shows multi-dot Team Holiday Calendar (per-user color, pending=amber, approved=user color) plus the existing approve/reject list."
+          comment: "Replaced text date inputs with react-native-calendars period range picker on staff Holiday Request modal. Admin Holidays tab now shows multi-dot Team Holiday Calendar."
+        - working: true
+          agent: "testing"
+          comment: "Verified: Profile +Request Holiday opens modal with holiday-calendar (testID). Tapped day 18 then 22, range highlight visible, filled reason 'Family event RT', submit-holiday returned successfully and request shows in list. Logged into admin → admin-tab-holidays default shows admin-holiday-calendar; Approve/Reject buttons visible for pending; Approve click cleared pending entry. Team holiday calendar dots present."
+  - task: "Frontend smoke flow — Auth, Schedule, Profile, Admin (PDF/Shifts/Swaps), Forms"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/index.tsx, /app/frontend/app/(tabs)/*, /app/frontend/app/admin.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: "End-to-end smoke at 390x844: (1) Auth — both admin@company.com / Admin@123 and jane@company.com / Staff@123 login successfully and land on /home. (2) Schedule tabs OK; availability mark-off/on flow works. (3) Holiday request via calendar range picker works and admin sees it. (4) Admin Shifts: opened Assign New Shift modal, selected 'Jane Doe', filled Title/Start/End, picked weekly + count 3, tapped shift-assign-submit → POST /api/shifts returned 200 {created:3, series_id, first:{...recurring:weekly}} and DOM now shows 3 occurrences of '· weekly' suffix on the new RecTestRT2 shift. NOTE: Alert.alert on react-native-web renders as a custom modal (not a browser dialog), so the literal 'Series created… 3 shifts' string is shown in-app but cannot be captured by Playwright dialog handler — verified via the network response payload instead. (5) Admin Swap Requests: staff submitted swap on a shift via swap-{id} → swap-submit; admin Shifts tab shows 'Swap Requests' section with swap-approve-{id} / swap-reject-{id} testIDs (1 pending visible). (6) Admin PDF tab loads (open-pdf-upload visible, no errors). (7) Staff Forms tab loads templates list including PDF/Fillable section. All 7 flows working."
 
 metadata:
   created_by: "main_agent"
@@ -265,5 +282,7 @@ agent_communication:
       message: "PDF Fillable Forms: 11/12 tests passed via /app/pdf_forms_test.py. CRITICAL BUG in flatten=true path of _fill_pdf (server.py): line `obj.update({NameObject(\"/Ff\"): NameObject(str(1 << 0))})` produces a NameObject(\"1\") which pypdf 6.x rejects (NameObject must start with '/'). Returns 500 'Incorrect first char in NameObject'. Fix: replace with `NumberObject(1)` (import NumberObject from pypdf.generic) since /Ff is a numeric flag, not a name. flatten=false works perfectly — text='John Doe', checkbox /V='/Yes', select 'Engineering' all verified by re-parsing the returned PDF. All other endpoints (CRUD, role scoping, cascade delete) behave as expected; pdf_base64 is correctly omitted from list payloads and filled_pdf_base64 omitted from submission lists; admin sees all submissions, staff sees only own, cross-user GET returns 403, staff POST/DELETE on templates returns 403."
     - agent: "testing"
       message: "Re-test of case 5 (POST /pdf-forms/templates/{id}/fill with flatten=true) PASSED via /app/pdf_forms_flatten_test.py against public proxy URL. Main agent's fix at server.py:1520 (NumberObject(existing | 1) instead of NameObject(str(1 << 0))) is correct. Verified end-to-end: admin uploads reportlab AcroForm PDF (text+checkbox+choice) → staff posts fill with flatten=true → 200 OK with filled_pdf_base64 decoding to %PDF; pypdf re-parse confirms /V values match inputs (full_name='Riley Thompson', accept='/Yes', dept='Operations'); all 3/3 widget annots have /Ff bit-0 (ReadOnly) set. Task 'PDF Fillable Forms (AcroForm parse + fill)' is now fully working."
+    - agent: "testing"
+      message: "Frontend smoke (mobile 390x844) end-to-end PASSED for all 7 requested flows: (1) Auth admin+staff login OK; (2) Schedule three tabs visible; availability-calendar tap-date → mark-off saves and 'Your unavailable days' section appears; mark-on toggles back. (3) Profile +Request Holiday opens holiday-calendar; 2-date range select + reason + submit-holiday → request appears in list and admin-side. (4) /admin defaults to holidays tab; admin-holiday-calendar renders with dots; Approve clears pending request. (5) Admin Shifts → Assign New Shift → Jane Doe + title + start + end + weekly + count=3 + shift-assign-submit → POST /api/shifts 200 with {created:3, series_id, first.recurring=weekly}; DOM shows 3 shifts with '· weekly' suffix. NB: Alert.alert uses RN-Web custom modal (not browser dialog) so dialog handler can't capture text — verified via network response. (6) Admin Swap Requests section visible with swap-approve-{id}/swap-reject-{id} after staff submitted swap on a shift via swap-{id}/swap-submit. (7) Admin PDF tab loads (open-pdf-upload visible); Staff Forms tab loads templates including PDF/Fillable section. No critical issues."
     - agent: "testing"
       message: "Recurring shifts + Availability backend tests PASSED (29/29) via /app/recurring_shifts_test.py. POST /api/shifts admin: recurring=daily repeat_count=4 → {created:4, series_id, first}, GET ?all=true confirms 4 shifts share the series_id with starts at +0d/+1d/+2d/+3d and occurrence_index [0,1,2,3]; recurring=weekly repeat_count=3 → {created:3, series_id} with +0d/+7d/+14d offsets; recurring=none and omitted recurring → {created:1, series_id:null} (repeat_count ignored). Staff POST /api/shifts → 403. POST /api/availability upserts (POST same date with available:true overwrites earlier false; only one record persists). GET /api/availability scoped to caller; admin ?all=true returns both admin + staff records, while staff ?all=true is still limited to own. All 9 created shifts cleaned up via DELETE /api/shifts/{id}. Both 'Recurring shifts' and a new 'Availability endpoints' task marked working: true."
