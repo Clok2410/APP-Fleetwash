@@ -9,11 +9,12 @@ import {
   Modal,
   TextInput,
 } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useRouter, Redirect } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Linking, Platform } from "react-native";
 import { api } from "../src/api";
+import { useAuth } from "../src/auth";
 import { colors, spacing, radius, typography } from "../src/theme";
 import FormBuilderModal from "../src/components/FormBuilderModal";
 import StatsModal from "../src/components/StatsModal";
@@ -22,6 +23,10 @@ import CustomerModal from "../src/components/CustomerModal";
 
 export default function AdminScreen() {
   const router = useRouter();
+  const { user } = useAuth();
+  if (user && user.role !== "admin") {
+    return <Redirect href="/(tabs)/home" />;
+  }
   const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "users" | "depots" | "offsite" | "customers">("holidays");
   const [holidays, setHolidays] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
@@ -70,13 +75,14 @@ export default function AdminScreen() {
       if (offUser) offsiteParams.user_id = offUser;
       if (offFrom) offsiteParams.date_from = offFrom;
       if (offTo) offsiteParams.date_to = offTo;
-      const [h, u, s, t, d, o] = await Promise.all([
+      const [h, u, s, t, d, o, cust] = await Promise.all([
         api.get("/holidays/requests", { params: { all: true } }),
         api.get("/users"),
         api.get("/shifts", { params: { all: true } }),
         api.get("/forms/templates"),
         api.get("/depots"),
         api.get("/admin/off-site-clock-ins", { params: offsiteParams }).catch(() => ({ data: [] })),
+        api.get("/customers").catch(() => ({ data: [] })),
       ]);
       setHolidays(h.data);
       setUsers(u.data);
@@ -84,6 +90,7 @@ export default function AdminScreen() {
       setAllTemplates(t.data);
       setDepots(d.data);
       setOffsite(o.data || []);
+      setCustomers(cust.data || []);
     } catch {}
   }, [offDepot, offUser, offFrom, offTo]);
 

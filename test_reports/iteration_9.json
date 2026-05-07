@@ -1,0 +1,29 @@
+{
+  "summary": "Iter 9 retest of three frontend fixes from iter 8: (1) admin customers list rendering, (2) Add Customer button gating, (3) staff /admin redirect. All three flows verified PASS after a fresh expo restart (initial bundle was stale and required `sudo supervisorctl restart expo` to pick up the modified admin.tsx).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "admin.tsx", "issue": "Conditional `<Redirect />` early return on lines 27-29 sits BEFORE the `useState` calls (lines 30-69). This violates the Rules of Hooks: when `user` flips from null (auth loading) to a staff user, the hook count drops from many to zero and React will log a 'Rendered fewer hooks than expected' warning/error. Functionally the redirect still works because Expo Router unmounts the screen, but the implementation is fragile. Recommend moving all `useState`/`useCallback` declarations above the redirect guard, or wrapping the page body in an inner component that is only rendered when role==='admin'."}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Refactor admin.tsx so the role gate runs after all hooks are declared (e.g. set a `denied` boolean from the user check, then `if (denied) return <Redirect ... />` AFTER the useState block, OR extract the body into a child component). This will eliminate the latent Rules of Hooks violation.",
+    "Optional polish: also hide the `open-new-customer` (Add Customer) CTA for non-admin viewers — currently it's only safe because the entire admin screen redirects, so there is no functional bug, but defence-in-depth doesn't hurt."
+  ],
+  "critical_code_review_comments": [
+    "admin.tsx line 27-29 early return precedes all useState/useCallback hooks → Rules of Hooks violation when role is non-admin.",
+    "admin.tsx is 616 lines — over the 700-line guideline soft limit but on the edge; consider splitting tabs (customers, off-site, depots) into dedicated components soon.",
+    "load() swallows all errors with a bare `try { ... } catch {}` (line 94). When /customers returns 500 or auth expires, the user sees an empty list with no toast/feedback. Acceptable for an admin-only screen but worth noting."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only iteration)", "frontend": "100% (3/3 flagged regressions fixed)"},
+  "seed_data_creation": "None — used existing seeded customer 'Aer Lingus' plus pre-existing UI_TestCustomer / UI_PersistedCustomer.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The fixes shipped in iter 8 (Promise.all includes /customers, Redirect for non-admin role) only became active after `sudo supervisorctl restart expo` because Metro was running in CI mode (reloads disabled) with a cached bundle. If you re-test this area and see empty customer lists, restart expo first before declaring a regression. Verified flows: admin → admin-tab-customers shows 3 cards (Aer Lingus, UI_PersistedCustomer, UI_TestCustomer); tapping Aer Lingus opens CustomerModal with PROFILE / SITE CONTACTS (1) / LOCATIONS (1) / CREW NOTES sections; staff jane@company.com hitting /admin both via push and via reload lands on /home with no Admin Panel rendered; staff home page does not show the open-admin testID. One latent code-quality issue (hook order in admin.tsx) flagged but does not break any user-visible behaviour.",
+  "rca_of_issue": "Initial run reported all three regressions still present. Root cause was NOT a code bug — it was Metro's CI-mode bundle cache holding the previous admin.tsx version. After `sudo supervisorctl restart expo` (which recompiled the bundle), the network trace showed the new GET /api/customers call firing, and customers rendered immediately. Mitigation: main agent should run `sudo supervisorctl restart expo` after editing screen files to ensure the served bundle reflects on-disk changes."
+}
