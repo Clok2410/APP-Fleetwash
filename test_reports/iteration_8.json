@@ -1,0 +1,36 @@
+{
+  "summary": "Iter8 Customers/CRM + shift-arrival notifications — Backend 18/18 PASS (customers CRUD, contacts, sites, notes role gating, shift+customer/site link, on-site arrival, off-site shift_off_site notification, shift auto-resolve when shift_id omitted). Frontend has working flows (admin tab → Add Customer → CustomerModal renders Profile/Contacts/Locations/Crew Notes), BUT critical UI gaps were found in admin.tsx around customers list rendering and staff role-gating.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "app/admin.tsx (load())", "issue": "load() never calls GET /api/customers, so the customers list state stays empty for both admin and staff. The 'Customers' tab shows only the 'Add Customer' button + empty-state copy; existing customers (verified via API count=3) are never rendered. Workaround: after creating a new customer, setActiveCustomerId immediately opens the CustomerModal, masking the bug. Need: add api.get('/customers') to the Promise.all in load() and setCustomers(data).", "testID": "admin-tab-customers", "priority": "HIGH"},
+      {"component": "app/admin.tsx Customers tab", "issue": "Staff users see the 'Add Customer' CTA. Backend correctly returns 403 on POST /api/customers for staff, but UI does not gate the button. Wrap the TouchableOpacity (testID open-new-customer) in `{user?.role === 'admin' && ...}`.", "testID": "open-new-customer", "priority": "MEDIUM"},
+      {"component": "app/admin.tsx route guard", "issue": "Staff (jane@company.com) can navigate directly to /admin URL and access ALL admin tabs (Holidays/Shifts/Forms/Users/Depots/Off-Site/Customers). Only the 'Admin' badge on /home is hidden. The Admin Panel screen has no role-based redirect. Add a useEffect that redirects non-admin users away from /admin (or hides admin-only tabs).", "testID": "n/a", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter8_customers.py",
+    "/app/test_reports/pytest/iter8_results.xml"
+  ],
+  "action_items": [
+    "Fix admin.tsx load(): include `api.get('/customers')` in the Promise.all and setCustomers(data) so the Customers list actually renders",
+    "Hide the 'Add Customer' button on the Customers tab when user.role !== 'admin'",
+    "Add a role guard at the top of admin.tsx so staff hitting /admin via direct URL is redirected (e.g. router.replace('/home') if user?.role !== 'admin')",
+    "Note: Modal-level role gating inside CustomerModal could not be fully verified end-to-end because the Customers list does not render — once #1 is fixed please retest staff opening a customer detail to confirm contact/site add inputs are hidden and only the Crew Notes composer is exposed."
+  ],
+  "critical_code_review_comments": [
+    "admin.tsx: 600+ lines and growing — consider splitting per-tab components",
+    "Bundle previously broke once with adjacent JSX error (recovered after rebuild). Worth verifying tsx structure during future edits.",
+    "load() catches errors silently with empty `try {} catch {}` — a console.warn would help debugging missing fetches like the customers omission."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter8_customers.py"],
+  "success_rate": {"backend": "100% (18/18)", "frontend": "~70% (admin create flow works; list rendering + role-gating gaps)"},
+  "seed_data_creation": "Created and cleaned up TEST_AerLingus customer + TEST_DublinHangar site + TEST_Shift via pytest. UI flow created leftover customers (UI_TestCustomer, UI_PersistedCustomer, STAFF_attempt_customer if any) — main agent may want to clean these via admin, but they don't impact other tests.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend behavior verified end-to-end including arrival notifications (haversine on customer site), shift_off_site notifications, and shift auto-resolution from current time when shift_id omitted. Frontend admin Customer create+modal flow works and CustomerModal renders all four sections (Profile/Contacts/Locations/Crew Notes) for admin. The Customers LIST itself does not render because admin.tsx load() never fetches /api/customers — fix that first, then retest staff-side role gating inside CustomerModal.",
+  "rca_of_issue": "ROOT CAUSE — Customers list empty: admin.tsx `load()` Promise.all only fetches holidays/users/shifts/templates/depots/offsite. No api.get('/customers') call. State `customers` (line 32) initialised to [] and never updated by load(). Repro: login as admin → Admin tab → Customers → list is empty even when DB has customers. Fix: add `api.get('/customers')` to Promise.all and `setCustomers(c.data)` in the destructure. ROOT CAUSE — Staff sees admin tabs at /admin: no role check on the AdminScreen; only the Admin pill on home is conditional. Repro: login as jane → manually navigate to /admin → all 7 tabs visible. Fix: top-of-component redirect when user.role !== 'admin'."
+}

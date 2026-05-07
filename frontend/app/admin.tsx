@@ -18,16 +18,24 @@ import { colors, spacing, radius, typography } from "../src/theme";
 import FormBuilderModal from "../src/components/FormBuilderModal";
 import StatsModal from "../src/components/StatsModal";
 import OffsiteMap from "../src/components/OffsiteMap";
+import CustomerModal from "../src/components/CustomerModal";
 
 export default function AdminScreen() {
   const router = useRouter();
-  const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "users" | "depots" | "offsite">("holidays");
+  const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "users" | "depots" | "offsite" | "customers">("holidays");
   const [holidays, setHolidays] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [allShifts, setAllShifts] = useState<any[]>([]);
   const [allTemplates, setAllTemplates] = useState<any[]>([]);
   const [depots, setDepots] = useState<any[]>([]);
   const [offsite, setOffsite] = useState<any[]>([]);
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
+  const [newCustomerModal, setNewCustomerModal] = useState(false);
+  const [ncName, setNcName] = useState("");
+  const [ncCompany, setNcCompany] = useState("");
+  const [ncEmail, setNcEmail] = useState("");
+  const [ncPhone, setNcPhone] = useState("");
   const [offDepot, setOffDepot] = useState<string>("");
   const [offUser, setOffUser] = useState<string>("");
   const [offFrom, setOffFrom] = useState<string>("");
@@ -167,7 +175,7 @@ export default function AdminScreen() {
       </View>
 
       <View style={styles.tabs}>
-        {(["holidays", "shifts", "forms", "users", "depots", "offsite"] as const).map((t) => (
+        {(["holidays", "shifts", "forms", "users", "depots", "offsite", "customers"] as const).map((t) => (
           <TouchableOpacity
             key={t}
             testID={`admin-tab-${t}`}
@@ -429,6 +437,37 @@ export default function AdminScreen() {
             )}
           </>
         )}
+
+        {tab === "customers" && (
+          <>
+            <TouchableOpacity testID="open-new-customer" style={styles.addCta} onPress={() => setNewCustomerModal(true)}>
+              <Feather name="user-plus" size={16} color="#fff" />
+              <Text style={styles.addCtaText}>Add Customer</Text>
+            </TouchableOpacity>
+            <Text style={[typography.small, { marginTop: 8, marginBottom: 4 }]}>
+              Crew tap a customer to view contacts, locations, and notes. Assign shifts to a customer site to auto-notify on arrival.
+            </Text>
+            {customers.map((c) => (
+              <TouchableOpacity
+                key={c.id}
+                testID={`customer-${c.id}`}
+                style={styles.card}
+                onPress={() => setActiveCustomerId(c.id)}
+              >
+                <View style={[styles.smBtn, { backgroundColor: colors.brandSoft, width: 36, height: 36, borderRadius: 18 }]}>
+                  <Feather name="briefcase" size={16} color={colors.brand} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "700", color: colors.primary }}>{c.name}</Text>
+                  <Text style={typography.small}>
+                    {c.company || "—"} · {(c.contacts || []).length} contacts · {(c.sites || []).length} sites
+                  </Text>
+                </View>
+                <Feather name="chevron-right" size={16} color={colors.textMuted} />
+              </TouchableOpacity>
+            ))}
+          </>
+        )}
       </ScrollView>
 
       {/* Shift Modal */}
@@ -488,6 +527,39 @@ export default function AdminScreen() {
 
       <FormBuilderModal visible={formModal} onClose={() => setFormModal(false)} onPublished={load} depots={depots} />
       <StatsModal template={statsTpl} onClose={() => setStatsTpl(null)} />
+      <CustomerModal customerId={activeCustomerId} onClose={() => { setActiveCustomerId(null); load(); }} />
+
+      {/* New Customer Modal */}
+      <Modal visible={newCustomerModal} animationType="slide" transparent onRequestClose={() => setNewCustomerModal(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={typography.h3}>New Customer</Text>
+            <TextInput testID="cust-name" style={styles.input} placeholder="Name (e.g. Aer Lingus)" value={ncName} onChangeText={setNcName} placeholderTextColor={colors.textMuted} />
+            <TextInput style={styles.input} placeholder="Company" value={ncCompany} onChangeText={setNcCompany} placeholderTextColor={colors.textMuted} />
+            <TextInput style={styles.input} placeholder="Email" value={ncEmail} onChangeText={setNcEmail} autoCapitalize="none" placeholderTextColor={colors.textMuted} />
+            <TextInput style={styles.input} placeholder="Phone" value={ncPhone} onChangeText={setNcPhone} placeholderTextColor={colors.textMuted} />
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: colors.surface }]} onPress={() => setNewCustomerModal(false)}>
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity testID="cust-submit" style={[styles.modalBtn, { backgroundColor: colors.primary }]} onPress={async () => {
+                if (!ncName) return Alert.alert("Name required");
+                try {
+                  const { data } = await api.post("/customers", { name: ncName, company: ncCompany, email: ncEmail, phone: ncPhone });
+                  setNewCustomerModal(false);
+                  setNcName(""); setNcCompany(""); setNcEmail(""); setNcPhone("");
+                  await load();
+                  setActiveCustomerId(data.id);
+                } catch (e: any) {
+                  Alert.alert("Error", e.response?.data?.detail || "Failed");
+                }
+              }}>
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Create & Open</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Depot Modal */}
       <Modal visible={depotModal} animationType="slide" transparent onRequestClose={() => setDepotModal(false)}>

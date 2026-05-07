@@ -131,6 +131,8 @@ class ShiftIn(BaseModel):
     end: str
     notes: Optional[str] = None
     recurring: Optional[str] = None  # daily|weekly|none
+    customer_id: Optional[str] = None
+    site_id: Optional[str] = None
 
 
 class SwapRequestIn(BaseModel):
@@ -199,6 +201,36 @@ class ClockNoteInGeo(BaseModel):
     lat: Optional[float] = None
     lng: Optional[float] = None
     depot_id: Optional[str] = None
+    shift_id: Optional[str] = None  # optional: link clock-in to a scheduled shift
+
+
+class ContactIn(BaseModel):
+    name: str
+    role: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+
+
+class SiteIn(BaseModel):
+    name: str
+    address: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    radius_m: Optional[float] = 200.0
+    description: Optional[str] = None
+
+
+class CustomerIn(BaseModel):
+    name: str
+    company: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class CustomerNoteIn(BaseModel):
+    body: str
+    category: str = "general"  # general | access | hazard | equipment | other
+    pinned: bool = False
 
 
 # ----------------- App init -----------------
@@ -273,20 +305,20 @@ async def clock_in(body: ClockNoteInGeo, current=Depends(get_current_user)):
     if existing:
         raise HTTPException(status_code=400, detail="Already clocked in")
 
-    # Geofence: find nearest depot, flag off-site if outside any depot
+    import math
+    def haversine(lat1, lon1, lat2, lon2):
+        R = 6371000
+        phi1 = math.radians(lat1); phi2 = math.radians(lat2)
+        dphi = math.radians(lat2 - lat1); dlam = math.radians(lon2 - lon1)
+        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+        return 2 * R * math.asin(math.sqrt(a))
+
     off_site = False
     matched_depot = None
     distance_m = None
     if body.lat is not None and body.lng is not None:
         depots = await db.depots.find().to_list(200)
         if depots:
-            import math
-            def haversine(lat1, lon1, lat2, lon2):
-                R = 6371000
-                phi1 = math.radians(lat1); phi2 = math.radians(lat2)
-                dphi = math.radians(lat2 - lat1); dlam = math.radians(lon2 - lon1)
-                a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlam/2)**2
-                return 2 * R * math.asin(math.sqrt(a))
             best = None
             for d in depots:
                 dist = haversine(body.lat, body.lng, d["lat"], d["lng"])
@@ -296,6 +328,42 @@ async def clock_in(body: ClockNoteInGeo, current=Depends(get_current_user)):
                 distance_m = round(best[0], 1)
                 matched_depot = best[1]
                 off_site = best[0] > best[1].get("radius_m", 200)
+
+    # Resolve scheduled shift + customer site geofence
+    shift_id = body.shift_id
+    customer_id = None
+    customer_name = None
+    site_id = None
+    site_name = None
+    site_distance_m = None
+    arrived_on_site = None
+
+    if not shift_id:
+        now_iso = now_utc().isoformat()
+        candidate = await db.shifts.find_one({
+            "user_id": current["id"],
+            "start": {"$lte": now_iso},
+            "end": {"$gte": now_iso},
+        })
+        if candidate:
+            shift_id = candidate["id"]
+
+    if shift_id:
+        shift = await db.shifts.find_one({"id": shift_id, "user_id": current["id"]})
+        if shift:
+            customer_id = shift.get("customer_id")
+            customer_name = shift.get("customer_name")
+            site_id = shift.get("site_id")
+            site_name = shift.get("site_name")
+            if customer_id and site_id and body.lat is not None and body.lng is not None:
+                cust = await db.customers.find_one({"id": customer_id})
+                if cust:
+                    site = next((s for s in cust.get("sites", []) if s["id"] == site_id), None)
+                    if site and site.get("lat") is not None and site.get("lng") is not None:
+                        d = haversine(body.lat, body.lng, site["lat"], site["lng"])
+                        site_distance_m = round(d, 1)
+                        arrived_on_site = d <= (site.get("radius_m") or 200)
+
     entry = {
         "id": str(uuid.uuid4()),
         "user_id": current["id"],
@@ -310,6 +378,13 @@ async def clock_in(body: ClockNoteInGeo, current=Depends(get_current_user)):
         "depot_name": matched_depot["name"] if matched_depot else None,
         "distance_m": distance_m,
         "off_site": off_site,
+        "shift_id": shift_id,
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+        "site_id": site_id,
+        "site_name": site_name,
+        "site_distance_m": site_distance_m,
+        "arrived_on_site": arrived_on_site,
     }
     await db.clock_entries.insert_one(entry)
     if off_site:
@@ -317,6 +392,20 @@ async def clock_in(body: ClockNoteInGeo, current=Depends(get_current_user)):
             kind="off_site",
             title="Off-site clock-in",
             body=f"{current['name']} clocked in {distance_m}m from {matched_depot['name']} (outside {matched_depot['radius_m']}m radius)",
+            related_id=entry["id"],
+        )
+    if arrived_on_site is True:
+        await create_admin_notifications(
+            kind="arrival",
+            title="On-site arrival",
+            body=f"{current['name']} arrived at {site_name} ({customer_name}) — {site_distance_m}m",
+            related_id=entry["id"],
+        )
+    elif arrived_on_site is False:
+        await create_admin_notifications(
+            kind="shift_off_site",
+            title="Off scheduled site",
+            body=f"{current['name']} clocked in {site_distance_m}m from {site_name} (scheduled for {customer_name})",
             related_id=entry["id"],
         )
     return serialize(entry)
@@ -411,6 +500,16 @@ async def create_shift(body: ShiftIn, _=Depends(require_admin)):
     user = await db.users.find_one({"id": body.user_id})
     if not user:
         raise HTTPException(status_code=404, detail="Assignee not found")
+    customer_name = None
+    site_name = None
+    if body.customer_id:
+        c = await db.customers.find_one({"id": body.customer_id})
+        if c:
+            customer_name = c["name"]
+            if body.site_id:
+                site = next((s for s in c.get("sites", []) if s["id"] == body.site_id), None)
+                if site:
+                    site_name = site["name"]
     shift = {
         "id": str(uuid.uuid4()),
         "user_id": body.user_id,
@@ -421,6 +520,10 @@ async def create_shift(body: ShiftIn, _=Depends(require_admin)):
         "end": body.end,
         "notes": body.notes,
         "recurring": body.recurring or "none",
+        "customer_id": body.customer_id,
+        "customer_name": customer_name,
+        "site_id": body.site_id,
+        "site_name": site_name,
         "created_at": now_utc(),
     }
     await db.shifts.insert_one(shift)
@@ -1181,6 +1284,130 @@ async def download_digest(did: str, _=Depends(require_admin)):
         raise HTTPException(status_code=404, detail="Digest not found")
     out = io.BytesIO(d["csv"].encode("utf-8"))
     return StreamingResponse(out, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{d["filename"]}"'})
+
+
+# ----------------- Customers / CRM -----------------
+@api.get("/customers")
+async def list_customers(_=Depends(get_current_user)):
+    docs = await db.customers.find().sort("name", 1).to_list(500)
+    return [serialize(d) for d in docs]
+
+
+@api.get("/customers/{cid}")
+async def get_customer(cid: str, _=Depends(get_current_user)):
+    doc = await db.customers.find_one({"id": cid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return serialize(doc)
+
+
+@api.post("/customers")
+async def create_customer(body: CustomerIn, _=Depends(require_admin)):
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": body.name,
+        "company": body.company,
+        "email": body.email,
+        "phone": body.phone,
+        "contacts": [],
+        "sites": [],
+        "created_at": now_utc(),
+    }
+    await db.customers.insert_one(doc)
+    return serialize(doc)
+
+
+@api.patch("/customers/{cid}")
+async def update_customer(cid: str, body: CustomerIn, _=Depends(require_admin)):
+    res = await db.customers.update_one({"id": cid}, {"$set": body.dict()})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    doc = await db.customers.find_one({"id": cid})
+    return serialize(doc)
+
+
+@api.delete("/customers/{cid}")
+async def delete_customer(cid: str, _=Depends(require_admin)):
+    await db.customers.delete_one({"id": cid})
+    await db.customer_notes.delete_many({"customer_id": cid})
+    return {"ok": True}
+
+
+@api.post("/customers/{cid}/contacts")
+async def add_contact(cid: str, body: ContactIn, _=Depends(require_admin)):
+    contact = {"id": str(uuid.uuid4()), **body.dict()}
+    res = await db.customers.update_one({"id": cid}, {"$push": {"contacts": contact}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return contact
+
+
+@api.delete("/customers/{cid}/contacts/{coid}")
+async def remove_contact(cid: str, coid: str, _=Depends(require_admin)):
+    await db.customers.update_one({"id": cid}, {"$pull": {"contacts": {"id": coid}}})
+    return {"ok": True}
+
+
+@api.post("/customers/{cid}/sites")
+async def add_site(cid: str, body: SiteIn, _=Depends(require_admin)):
+    site = {"id": str(uuid.uuid4()), **body.dict()}
+    res = await db.customers.update_one({"id": cid}, {"$push": {"sites": site}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return site
+
+
+@api.delete("/customers/{cid}/sites/{sid}")
+async def remove_site(cid: str, sid: str, _=Depends(require_admin)):
+    await db.customers.update_one({"id": cid}, {"$pull": {"sites": {"id": sid}}})
+    return {"ok": True}
+
+
+@api.get("/customers/{cid}/notes")
+async def list_customer_notes(cid: str, _=Depends(get_current_user)):
+    docs = await db.customer_notes.find({"customer_id": cid}).sort([("pinned", -1), ("created_at", -1)]).to_list(500)
+    return [serialize(d) for d in docs]
+
+
+@api.post("/customers/{cid}/notes")
+async def add_customer_note(cid: str, body: CustomerNoteIn, current=Depends(get_current_user)):
+    if not await db.customers.find_one({"id": cid}):
+        raise HTTPException(status_code=404, detail="Customer not found")
+    note = {
+        "id": str(uuid.uuid4()),
+        "customer_id": cid,
+        "body": body.body,
+        "category": body.category,
+        "pinned": body.pinned,
+        "author_id": current["id"],
+        "author_name": current["name"],
+        "created_at": now_utc(),
+    }
+    await db.customer_notes.insert_one(note)
+    return serialize(note)
+
+
+@api.patch("/customers/{cid}/notes/{nid}")
+async def update_customer_note(cid: str, nid: str, body: CustomerNoteIn, current=Depends(get_current_user)):
+    note = await db.customer_notes.find_one({"id": nid, "customer_id": cid})
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    if current.get("role") != "admin" and note["author_id"] != current["id"]:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    await db.customer_notes.update_one({"id": nid}, {"$set": body.dict()})
+    doc = await db.customer_notes.find_one({"id": nid})
+    return serialize(doc)
+
+
+@api.delete("/customers/{cid}/notes/{nid}")
+async def delete_customer_note(cid: str, nid: str, current=Depends(get_current_user)):
+    note = await db.customer_notes.find_one({"id": nid, "customer_id": cid})
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    if current.get("role") != "admin" and note["author_id"] != current["id"]:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    await db.customer_notes.delete_one({"id": nid})
+    return {"ok": True}
 
 
 # ----------------- Startup -----------------
