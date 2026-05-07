@@ -95,3 +95,8 @@ Built-in **AI Form Summaries** turn every employee submission (incident report, 
 - Checklist templates can be tied to a depot (`depot_id` field, picker in FormBuilderModal).
 - Weekly digest now produces **one CSV per depot** (templates without `depot_id` grouped under "Unassigned"). Each CSV is saved to `digests` and individually downloadable.
 - Resend email attaches all bundles to a single email; mocked alert in admin UI lists every bundle by depot.
+
+### 13. Off-site Filters + Native MapView (NEW)
+- `/api/admin/off-site-clock-ins` accepts `depot_id`, `user_id`, `date_from`, `date_to` query params (with `days=N` fallback when no date range provided).
+- Off-site tab UI adds chip-based filters for depot and employee plus YYYY-MM-DD date range inputs and an "Apply Filters" button.
+- Native iOS/Android renders an interactive `react-native-maps` MapView with green depot markers + circles (radius) and red employee pins for each off-site entry. Web preview shows a fallback informational card; "Open in Maps" deep-link still available per row.
