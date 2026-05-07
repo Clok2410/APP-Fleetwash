@@ -1476,7 +1476,7 @@ def _extract_pdf_fields(pdf_bytes: bytes) -> List[Dict[str, Any]]:
 def _fill_pdf(pdf_bytes: bytes, values: Dict[str, Any], flatten: bool = True) -> bytes:
     """Fill AcroForm fields in PDF and return new PDF bytes. If flatten, mark read-only."""
     from pypdf import PdfReader, PdfWriter
-    from pypdf.generic import NameObject, BooleanObject, TextStringObject
+    from pypdf.generic import NameObject, BooleanObject, NumberObject
 
     reader = PdfReader(io.BytesIO(pdf_bytes))
     writer = PdfWriter(clone_from=reader)
@@ -1508,7 +1508,7 @@ def _fill_pdf(pdf_bytes: bytes, values: Dict[str, Any], flatten: bool = True) ->
             pass
 
     if flatten:
-        # Best-effort flatten — mark fields read-only
+        # Best-effort flatten — mark fields read-only via /Ff bit 0 (numeric flag)
         try:
             for page in writer.pages:
                 if "/Annots" in page:
@@ -1516,7 +1516,8 @@ def _fill_pdf(pdf_bytes: bytes, values: Dict[str, Any], flatten: bool = True) ->
                         try:
                             obj = annot.get_object()
                             if obj.get("/Subtype") == "/Widget":
-                                obj.update({NameObject("/Ff"): NameObject(str(1 << 0))})  # ReadOnly
+                                existing = int(obj.get("/Ff", 0) or 0)
+                                obj.update({NameObject("/Ff"): NumberObject(existing | 1)})
                         except Exception:
                             continue
         except Exception:
