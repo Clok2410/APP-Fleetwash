@@ -16,6 +16,7 @@ import * as Location from "expo-location";
 import { api } from "../../src/api";
 import { useAuth } from "../../src/auth";
 import { colors, spacing, radius, typography } from "../../src/theme";
+import NotificationsModal from "../../src/components/NotificationsModal";
 
 function fmtDuration(seconds: number) {
   const h = Math.floor(seconds / 3600);
@@ -31,21 +32,25 @@ export default function HomeScreen() {
   const [balance, setBalance] = useState<any>(null);
   const [todayShifts, setTodayShifts] = useState<any[]>([]);
   const [alerts, setAlerts] = useState<any[]>([]);
+  const [unread, setUnread] = useState(0);
+  const [showNotifs, setShowNotifs] = useState(false);
   const [tick, setTick] = useState(0);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [s, b, sh] = await Promise.all([
+      const [s, b, sh, n] = await Promise.all([
         api.get("/clock/status"),
         api.get("/holidays/balance"),
         api.get("/shifts"),
+        api.get("/notifications", { params: { unread_only: true } }),
       ]);
       setStatus(s.data);
       setBalance(b.data);
       const today = new Date().toISOString().slice(0, 10);
       setTodayShifts((sh.data || []).filter((x: any) => (x.start || "").slice(0, 10) === today));
+      setUnread((n.data || []).length);
       if (user?.role === "admin") {
         try {
           const a = await api.get("/admin/checklist-alerts");
@@ -123,6 +128,7 @@ export default function HomeScreen() {
             <Text style={typography.label}>Welcome back</Text>
             <Text style={[typography.h2, { marginTop: 4 }]}>{user?.name}.</Text>
           </View>
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
           {user?.role === "admin" && (
             <TouchableOpacity
               testID="open-admin"
@@ -133,6 +139,19 @@ export default function HomeScreen() {
               <Text style={styles.adminPillText}>Admin</Text>
             </TouchableOpacity>
           )}
+          <TouchableOpacity
+            testID="open-notifs"
+            style={[styles.adminPill, { marginLeft: 6, backgroundColor: colors.surface, paddingHorizontal: 10 }]}
+            onPress={() => setShowNotifs(true)}
+          >
+            <Feather name="bell" size={16} color={colors.primary} />
+            {unread > 0 && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{unread > 9 ? "9+" : unread}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.clockCard}>
@@ -237,6 +256,7 @@ export default function HomeScreen() {
           </View>
         </View>
       </ScrollView>
+      <NotificationsModal visible={showNotifs} onClose={() => setShowNotifs(false)} onChanged={load} />
     </SafeAreaView>
   );
 }
@@ -337,4 +357,17 @@ const styles = StyleSheet.create({
     borderTopColor: "#FECACA",
     borderTopWidth: 1,
   },
+  badge: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    backgroundColor: colors.alert,
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  badgeText: { color: "#fff", fontSize: 10, fontWeight: "700" },
 });

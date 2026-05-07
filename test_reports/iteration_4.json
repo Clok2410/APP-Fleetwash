@@ -1,0 +1,41 @@
+{
+  "summary": "Iteration 4 testing: Notifications + Depots/Geofencing + Weekly Digest. Backend: 17/17 pytest cases pass (CRUD depots, off-site/on-site geofence detection, admin-only notifications, mark read/read-all, scan-alerts idempotent, checklist below-target auto-notification, weekly-digest mocked + persisted + downloadable, admin-only access enforced). APScheduler verified started for Mon 09:00 UTC via backend logs. Frontend smoke-tested on mobile viewport (390x844): login, bell icon w/ unread badge, NotificationsModal with read-all, Admin Panel→Depots tab, Add Depot modal (created + listed), Send Weekly Digest Now button. All flows work end-to-end.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/depots", "issue": "radius_m has no min/max validation — negative values would be accepted (low priority, not exploited in tests)"},
+      {"endpoint": "POST /api/clock/in", "issue": "If lat/lng provided but no depots configured, off_site stays False silently. Acceptable per design but consider logging."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "expo dependencies", "issue": "Expo doctor warns several expo-* packages are out of expected version (expo-location@55.1.9 vs ~19.0.8 etc). App still bundles & runs. Not blocking."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter4_notifs_depots_digest.py",
+    "/app/test_reports/pytest/iter4_results.xml"
+  ],
+  "action_items": [
+    "Optional: add validation min radius_m > 0 on DepotIn",
+    "Optional: when clicking Send Weekly Digest Now, the Alert.alert popup is RN-native; consider showing an inline toast/banner for web preview clarity"
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~1200 lines — consider splitting into modules (auth, clock, forms, notifications, depots, digest) for maintainability",
+    "create_admin_notifications writes synchronously inside POST /clock/in and /forms/submissions; acceptable for current scale but consider background task if user count grows",
+    "Resend integration is correctly mocked when RESEND_API_KEY is empty and clearly logs '[MOCKED EMAIL]' — verified in backend logs",
+    "Idempotency on /admin/scan-alerts uses created_at>=today_start and matching kind+related_id — works correctly"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter4_notifs_depots_digest.py (new)"
+  ],
+  "success_rate": {"backend": "100% (17/17)", "frontend": "100% (smoke-tested critical flows)"},
+  "seed_data_creation": "Tests create TEST_-prefixed depots and checklist templates and clean them up. One Dublin HQ depot (53.3498, -6.2603, 200m) was preserved from prior testing iteration.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend public URL: https://b863035e-804d-4d41-9158-321900c27687.preview.emergentagent.com (note frontend uses EXPO_PUBLIC_BACKEND_URL key, not EXPO_BACKEND_URL). Existing seed depot 'Dublin HQ' at 53.3498,-6.2603 200m exists — when testing geofence, use coords far from it (the test uses 0,-30 mid-Atlantic for off-site). Resend mocked because RESEND_API_KEY env is empty. APScheduler logs '[MOCKED SCHEDULED EMAIL]' on cron fire.",
+  "rca_of_issue": "N/A — all features functioning as specified."
+}

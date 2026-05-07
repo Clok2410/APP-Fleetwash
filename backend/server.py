@@ -9,6 +9,7 @@ import io
 import uuid
 import bcrypt
 import jwt
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Any, Dict
@@ -184,6 +185,21 @@ class FormSubmissionIn(BaseModel):
     values: Dict[str, Any]
 
 
+class DepotIn(BaseModel):
+    name: str
+    lat: float
+    lng: float
+    radius_m: float = 200.0
+
+
+class ClockNoteInGeo(BaseModel):
+    note: Optional[str] = None
+    location: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    depot_id: Optional[str] = None
+
+
 # ----------------- App init -----------------
 app = FastAPI(title="StaffHub API")
 api = APIRouter(prefix="/api")
@@ -251,10 +267,34 @@ async def clock_status(current=Depends(get_current_user)):
 
 
 @api.post("/clock/in")
-async def clock_in(body: ClockNoteIn, current=Depends(get_current_user)):
+async def clock_in(body: ClockNoteInGeo, current=Depends(get_current_user)):
     existing = await db.clock_entries.find_one({"user_id": current["id"], "clock_out": None})
     if existing:
         raise HTTPException(status_code=400, detail="Already clocked in")
+
+    # Geofence: find nearest depot, flag off-site if outside any depot
+    off_site = False
+    matched_depot = None
+    distance_m = None
+    if body.lat is not None and body.lng is not None:
+        depots = await db.depots.find().to_list(200)
+        if depots:
+            import math
+            def haversine(lat1, lon1, lat2, lon2):
+                R = 6371000
+                phi1 = math.radians(lat1); phi2 = math.radians(lat2)
+                dphi = math.radians(lat2 - lat1); dlam = math.radians(lon2 - lon1)
+                a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlam/2)**2
+                return 2 * R * math.asin(math.sqrt(a))
+            best = None
+            for d in depots:
+                dist = haversine(body.lat, body.lng, d["lat"], d["lng"])
+                if best is None or dist < best[0]:
+                    best = (dist, d)
+            if best:
+                distance_m = round(best[0], 1)
+                matched_depot = best[1]
+                off_site = best[0] > best[1].get("radius_m", 200)
     entry = {
         "id": str(uuid.uuid4()),
         "user_id": current["id"],
@@ -263,8 +303,21 @@ async def clock_in(body: ClockNoteIn, current=Depends(get_current_user)):
         "clock_out": None,
         "location": body.location,
         "note": body.note,
+        "lat": body.lat,
+        "lng": body.lng,
+        "depot_id": matched_depot["id"] if matched_depot else None,
+        "depot_name": matched_depot["name"] if matched_depot else None,
+        "distance_m": distance_m,
+        "off_site": off_site,
     }
     await db.clock_entries.insert_one(entry)
+    if off_site:
+        await create_admin_notifications(
+            kind="off_site",
+            title="Off-site clock-in",
+            body=f"{current['name']} clocked in {distance_m}m from {matched_depot['name']} (outside {matched_depot['radius_m']}m radius)",
+            related_id=entry["id"],
+        )
     return serialize(entry)
 
 
@@ -645,6 +698,26 @@ async def create_submission(body: FormSubmissionIn, current=Depends(get_current_
         "created_at": now_utc(),
     }
     await db.form_submissions.insert_one(sub)
+
+    # Auto-notify admins if checklist submission is below target
+    if tpl.get("kind") == "checklist":
+        items = tpl.get("checklist_items") or []
+        target = tpl.get("target_percent") or 100.0
+        total_done = 0
+        total_possible = 0
+        for it in items:
+            for sk in it["sub_keys"]:
+                total_possible += 1
+                if body.values.get(f"{it['id']}_{sk}") in (True, "true", "True"):
+                    total_done += 1
+        overall = (total_done / total_possible * 100.0) if total_possible else 0.0
+        if overall < target:
+            await create_admin_notifications(
+                kind="checklist_below_target",
+                title=f"{tpl['title']} below target",
+                body=f"{current['name']} submitted at {round(overall,1)}% (target {target}%)",
+                related_id=tpl["id"],
+            )
     return serialize(sub)
 
 
@@ -814,6 +887,210 @@ async def checklist_alerts(_=Depends(require_admin)):
     return alerts
 
 
+# ---------- Notifications ----------
+async def create_admin_notifications(kind: str, title: str, body: str, related_id: Optional[str] = None):
+    admins = await db.users.find({"role": "admin", "active": {"$ne": False}}).to_list(500)
+    docs = []
+    for a in admins:
+        docs.append({
+            "id": str(uuid.uuid4()),
+            "user_id": a["id"],
+            "kind": kind,
+            "title": title,
+            "body": body,
+            "related_id": related_id,
+            "read": False,
+            "created_at": now_utc(),
+        })
+    if docs:
+        await db.notifications.insert_many(docs)
+
+
+@api.get("/notifications")
+async def list_notifications(current=Depends(get_current_user), unread_only: bool = False):
+    q: Dict[str, Any] = {"user_id": current["id"]}
+    if unread_only:
+        q["read"] = False
+    docs = await db.notifications.find(q).sort("created_at", -1).limit(100).to_list(100)
+    return [serialize(d) for d in docs]
+
+
+@api.post("/notifications/{nid}/read")
+async def read_notification(nid: str, current=Depends(get_current_user)):
+    await db.notifications.update_one({"id": nid, "user_id": current["id"]}, {"$set": {"read": True}})
+    return {"ok": True}
+
+
+@api.post("/notifications/read-all")
+async def read_all(current=Depends(get_current_user)):
+    await db.notifications.update_many({"user_id": current["id"], "read": False}, {"$set": {"read": True}})
+    return {"ok": True}
+
+
+@api.post("/admin/scan-alerts")
+async def scan_alerts(current=Depends(require_admin)):
+    """Scan checklists and create notifications for current alerts (idempotent per day per template)."""
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    templates = await db.form_templates.find({"kind": "checklist"}).to_list(500)
+    created = 0
+    for tpl in templates:
+        items = tpl.get("checklist_items") or []
+        target = tpl.get("target_percent") or 100.0
+        subs = await db.form_submissions.find({"template_id": tpl["id"], "created_at": {"$gte": today_start}}).to_list(500)
+        below = False
+        reason = ""
+        overall = 0.0
+        if not subs:
+            below = True
+            reason = "no_submission"
+        else:
+            total_done = 0
+            total_possible = 0
+            for it in items:
+                for sk in it["sub_keys"]:
+                    total_possible += len(subs)
+                    for s in subs:
+                        if (s.get("values") or {}).get(f"{it['id']}_{sk}") in (True, "true", "True"):
+                            total_done += 1
+            overall = (total_done / total_possible * 100.0) if total_possible else 0.0
+            if overall < target:
+                below = True
+                reason = "below_target"
+        if below:
+            existing = await db.notifications.find_one({
+                "kind": "checklist_alert",
+                "related_id": tpl["id"],
+                "created_at": {"$gte": today_start},
+            })
+            if not existing:
+                await create_admin_notifications(
+                    kind="checklist_alert",
+                    title=f"{tpl['title']} below target",
+                    body=f"{reason.replace('_',' ').title()} — {round(overall,1)}% / target {target}%",
+                    related_id=tpl["id"],
+                )
+                created += 1
+    return {"alerts_created": created}
+
+
+# ---------- Depots ----------
+@api.post("/depots")
+async def create_depot(body: DepotIn, _=Depends(require_admin)):
+    d = {
+        "id": str(uuid.uuid4()),
+        "name": body.name,
+        "lat": body.lat,
+        "lng": body.lng,
+        "radius_m": body.radius_m,
+        "created_at": now_utc(),
+    }
+    await db.depots.insert_one(d)
+    return serialize(d)
+
+
+@api.get("/depots")
+async def list_depots(_=Depends(get_current_user)):
+    docs = await db.depots.find().sort("name", 1).to_list(200)
+    return [serialize(d) for d in docs]
+
+
+@api.delete("/depots/{did}")
+async def delete_depot(did: str, _=Depends(require_admin)):
+    await db.depots.delete_one({"id": did})
+    return {"ok": True}
+
+
+# ---------- Weekly Digest ----------
+async def build_digest_csv() -> tuple[str, str]:
+    """Build CSV string of all checklist compliance for last 7 days. Returns (filename, csv_text)."""
+    import csv as _csv
+    now = now_utc()
+    week_ago = now - timedelta(days=7)
+    templates = await db.form_templates.find({"kind": "checklist"}).to_list(500)
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["StaffHub Weekly Compliance Digest"])
+    w.writerow([f"Range: {week_ago.date()} → {now.date()}"])
+    w.writerow([])
+    w.writerow(["Checklist", "Target %", "Submissions", "Overall %", "On Target"])
+    for tpl in templates:
+        items = tpl.get("checklist_items") or []
+        target = tpl.get("target_percent") or 100.0
+        subs = await db.form_submissions.find({"template_id": tpl["id"], "created_at": {"$gte": week_ago}}).to_list(500)
+        total_done = 0; total_possible = 0
+        for it in items:
+            for sk in it["sub_keys"]:
+                total_possible += len(subs)
+                for s in subs:
+                    if (s.get("values") or {}).get(f"{it['id']}_{sk}") in (True, "true", "True"):
+                        total_done += 1
+        overall = round((total_done / total_possible * 100.0) if total_possible else 0.0, 1)
+        w.writerow([tpl["title"], target, len(subs), overall, "YES" if overall >= target else "NO"])
+    return f"staffhub-digest-{now.date()}.csv", buf.getvalue()
+
+
+@api.post("/admin/weekly-digest")
+async def send_weekly_digest(current=Depends(require_admin)):
+    filename, csv_text = await build_digest_csv()
+    # Save server-side artifact
+    record = {
+        "id": str(uuid.uuid4()),
+        "filename": filename,
+        "csv": csv_text,
+        "generated_by": current["name"],
+        "created_at": now_utc(),
+    }
+    await db.digests.insert_one(record)
+
+    # Email all admins (mocked unless RESEND_API_KEY set)
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    sender = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
+    admins = await db.users.find({"role": "admin", "active": {"$ne": False}}).to_list(200)
+    recipients = [a["email"] for a in admins]
+    html = (
+        "<h2>Weekly Compliance Digest</h2>"
+        f"<p>Generated by {current['name']}.</p>"
+        "<p>The attached CSV summarises every checklist's compliance over the last 7 days.</p>"
+    )
+    sent = []
+    if api_key:
+        try:
+            import base64
+            import resend
+            resend.api_key = api_key
+            params = {
+                "from": sender,
+                "to": recipients,
+                "subject": "StaffHub — Weekly Compliance Digest",
+                "html": html,
+                "attachments": [{"filename": filename, "content": base64.b64encode(csv_text.encode()).decode()}],
+            }
+            email = await asyncio.to_thread(resend.Emails.send, params)
+            sent = recipients
+            logger.info(f"Sent digest email id={email.get('id')} to {recipients}")
+        except Exception as e:
+            logger.exception("Resend send failed")
+            return {"ok": False, "error": str(e), "filename": filename, "digest_id": record["id"]}
+    else:
+        logger.info(f"[MOCKED EMAIL] To {recipients} | Subject: StaffHub Weekly Digest | Attachment: {filename} ({len(csv_text)} bytes)")
+    return {"ok": True, "mocked": not bool(api_key), "recipients": recipients, "sent": sent, "digest_id": record["id"], "filename": filename}
+
+
+@api.get("/admin/digests")
+async def list_digests(_=Depends(require_admin)):
+    docs = await db.digests.find({}, {"csv": 0}).sort("created_at", -1).limit(50).to_list(50)
+    return [serialize(d) for d in docs]
+
+
+@api.get("/admin/digests/{did}/download")
+async def download_digest(did: str, _=Depends(require_admin)):
+    d = await db.digests.find_one({"id": did})
+    if not d:
+        raise HTTPException(status_code=404, detail="Digest not found")
+    out = io.BytesIO(d["csv"].encode("utf-8"))
+    return StreamingResponse(out, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{d["filename"]}"'})
+
+
 # ----------------- Startup -----------------
 @app.on_event("startup")
 async def on_startup():
@@ -824,6 +1101,52 @@ async def on_startup():
     await db.holiday_requests.create_index([("user_id", 1), ("created_at", -1)])
     await db.form_templates.create_index("id", unique=True)
     await db.form_submissions.create_index([("user_id", 1), ("created_at", -1)])
+    await db.notifications.create_index([("user_id", 1), ("read", 1), ("created_at", -1)])
+    await db.depots.create_index("id", unique=True)
+
+    # Schedule weekly digest (Mon 09:00 UTC)
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+        scheduler = AsyncIOScheduler(timezone="UTC")
+
+        async def weekly_digest_job():
+            try:
+                filename, csv_text = await build_digest_csv()
+                rec = {
+                    "id": str(uuid.uuid4()),
+                    "filename": filename,
+                    "csv": csv_text,
+                    "generated_by": "scheduler",
+                    "created_at": now_utc(),
+                }
+                await db.digests.insert_one(rec)
+                api_key = os.environ.get("RESEND_API_KEY", "").strip()
+                admins = await db.users.find({"role": "admin", "active": {"$ne": False}}).to_list(200)
+                recipients = [a["email"] for a in admins]
+                if api_key and recipients:
+                    import base64, resend
+                    resend.api_key = api_key
+                    params = {
+                        "from": os.environ.get("SENDER_EMAIL", "onboarding@resend.dev"),
+                        "to": recipients,
+                        "subject": "StaffHub — Weekly Compliance Digest",
+                        "html": "<h2>Weekly Compliance Digest</h2><p>Attached CSV summarises every checklist's compliance over the last 7 days.</p>",
+                        "attachments": [{"filename": filename, "content": base64.b64encode(csv_text.encode()).decode()}],
+                    }
+                    await asyncio.to_thread(resend.Emails.send, params)
+                    logger.info(f"Scheduled digest sent to {recipients}")
+                else:
+                    logger.info(f"[MOCKED SCHEDULED EMAIL] To {recipients} | {filename}")
+            except Exception:
+                logger.exception("Scheduled digest failed")
+
+        scheduler.add_job(weekly_digest_job, CronTrigger(day_of_week="mon", hour=9, minute=0))
+        scheduler.start()
+        app.state.scheduler = scheduler
+        logger.info("Scheduler started: weekly digest (Mon 09:00 UTC)")
+    except Exception:
+        logger.exception("Could not start scheduler")
 
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@company.com")

@@ -19,11 +19,18 @@ import StatsModal from "../src/components/StatsModal";
 
 export default function AdminScreen() {
   const router = useRouter();
-  const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "users">("holidays");
+  const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "users" | "depots">("holidays");
   const [holidays, setHolidays] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [allShifts, setAllShifts] = useState<any[]>([]);
   const [allTemplates, setAllTemplates] = useState<any[]>([]);
+  const [depots, setDepots] = useState<any[]>([]);
+  const [depotModal, setDepotModal] = useState(false);
+  const [dName, setDName] = useState("");
+  const [dLat, setDLat] = useState("");
+  const [dLng, setDLng] = useState("");
+  const [dRadius, setDRadius] = useState("200");
+  const [digestBusy, setDigestBusy] = useState(false);
 
   const [shiftModal, setShiftModal] = useState(false);
   const [sUser, setSUser] = useState("");
@@ -43,18 +50,52 @@ export default function AdminScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [h, u, s, t] = await Promise.all([
+      const [h, u, s, t, d] = await Promise.all([
         api.get("/holidays/requests", { params: { all: true } }),
         api.get("/users"),
         api.get("/shifts", { params: { all: true } }),
         api.get("/forms/templates"),
+        api.get("/depots"),
       ]);
       setHolidays(h.data);
       setUsers(u.data);
       setAllShifts(s.data);
       setAllTemplates(t.data);
+      setDepots(d.data);
     } catch {}
   }, []);
+
+  const createDepot = async () => {
+    if (!dName || !dLat || !dLng) return Alert.alert("Missing info");
+    try {
+      await api.post("/depots", {
+        name: dName,
+        lat: parseFloat(dLat),
+        lng: parseFloat(dLng),
+        radius_m: parseFloat(dRadius) || 200,
+      });
+      setDepotModal(false);
+      setDName(""); setDLat(""); setDLng(""); setDRadius("200");
+      await load();
+    } catch (e: any) {
+      Alert.alert("Error", e.response?.data?.detail || "Failed");
+    }
+  };
+
+  const sendDigest = async () => {
+    setDigestBusy(true);
+    try {
+      const { data } = await api.post("/admin/weekly-digest");
+      Alert.alert(
+        "Digest generated",
+        `${data.mocked ? "MOCKED — no API key set." : "Sent."} Recipients: ${(data.recipients || []).join(", ")}\nFile: ${data.filename}`
+      );
+    } catch (e: any) {
+      Alert.alert("Error", e.response?.data?.detail || "Failed");
+    } finally {
+      setDigestBusy(false);
+    }
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -101,7 +142,7 @@ export default function AdminScreen() {
       </View>
 
       <View style={styles.tabs}>
-        {(["holidays", "shifts", "forms", "users"] as const).map((t) => (
+        {(["holidays", "shifts", "forms", "users", "depots"] as const).map((t) => (
           <TouchableOpacity
             key={t}
             testID={`admin-tab-${t}`}
@@ -212,6 +253,43 @@ export default function AdminScreen() {
             ))}
           </>
         )}
+
+        {tab === "depots" && (
+          <>
+            <TouchableOpacity testID="open-depot-modal" style={styles.addCta} onPress={() => setDepotModal(true)}>
+              <Feather name="map-pin" size={16} color="#fff" />
+              <Text style={styles.addCtaText}>Add Depot</Text>
+            </TouchableOpacity>
+            <Text style={[typography.small, { marginTop: 8, marginBottom: 4 }]}>
+              Geofences: clock-ins outside any depot's radius are flagged "off-site" and notify all admins.
+            </Text>
+            <TouchableOpacity
+              testID="send-digest-btn"
+              style={[styles.addCta, { backgroundColor: colors.brand, marginTop: 4 }]}
+              onPress={sendDigest}
+              disabled={digestBusy}
+            >
+              <Feather name="mail" size={16} color="#fff" />
+              <Text style={styles.addCtaText}>{digestBusy ? "Generating…" : "Send Weekly Digest Now"}</Text>
+            </TouchableOpacity>
+            {depots.map((d) => (
+              <View key={d.id} style={styles.card} testID={`depot-${d.id}`}>
+                <View style={[styles.smBtn, { backgroundColor: colors.brandSoft, width: 36, height: 36, borderRadius: 18 }]}>
+                  <Feather name="map-pin" size={16} color={colors.brand} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "700", color: colors.primary }}>{d.name}</Text>
+                  <Text style={typography.small}>
+                    {d.lat?.toFixed(4)}, {d.lng?.toFixed(4)} · {d.radius_m}m radius
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={async () => { await api.delete(`/depots/${d.id}`); await load(); }}>
+                  <Feather name="trash-2" size={14} color={colors.alert} />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </>
+        )}
       </ScrollView>
 
       {/* Shift Modal */}
@@ -271,6 +349,27 @@ export default function AdminScreen() {
 
       <FormBuilderModal visible={formModal} onClose={() => setFormModal(false)} onPublished={load} />
       <StatsModal template={statsTpl} onClose={() => setStatsTpl(null)} />
+
+      {/* Depot Modal */}
+      <Modal visible={depotModal} animationType="slide" transparent onRequestClose={() => setDepotModal(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={typography.h3}>Add Depot</Text>
+            <TextInput style={styles.input} placeholder="Name (e.g. Dublin HQ)" value={dName} onChangeText={setDName} placeholderTextColor={colors.textMuted} />
+            <TextInput style={styles.input} placeholder="Latitude (e.g. 53.3498)" value={dLat} onChangeText={setDLat} keyboardType="numeric" placeholderTextColor={colors.textMuted} />
+            <TextInput style={styles.input} placeholder="Longitude (e.g. -6.2603)" value={dLng} onChangeText={setDLng} keyboardType="numeric" placeholderTextColor={colors.textMuted} />
+            <TextInput style={styles.input} placeholder="Radius in metres (default 200)" value={dRadius} onChangeText={setDRadius} keyboardType="numeric" placeholderTextColor={colors.textMuted} />
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: colors.surface }]} onPress={() => setDepotModal(false)}>
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity testID="create-depot-submit" style={[styles.modalBtn, { backgroundColor: colors.primary }]} onPress={createDepot}>
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Add</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
