@@ -86,3 +86,12 @@ A mobile-first workforce OS that gives every employee one tap to clock in, reque
 
 ## Smart Business Enhancement
 Built-in **AI Form Summaries** turn every employee submission (incident report, expense, feedback) into an instant 3-4 sentence digest for the admin — reducing review time by ~80% and surfacing flags that warrant attention. This is a paid-feature hook for SaaS upsell.
+
+### 11. Off-site Review (NEW)
+- Admin Panel → **Off-site** tab lists every flagged clock-in over the last 14 days (`/api/admin/off-site-clock-ins`).
+- Each row: employee, distance to nearest depot (auto km/m), lat/lng, timestamp, plus an **Open in Maps** button that launches Google Maps (Android/Web) or Apple Maps (iOS) at the exact coordinates.
+
+### 12. Per-Depot Weekly Digest (NEW)
+- Checklist templates can be tied to a depot (`depot_id` field, picker in FormBuilderModal).
+- Weekly digest now produces **one CSV per depot** (templates without `depot_id` grouped under "Unassigned"). Each CSV is saved to `digests` and individually downloadable.
+- Resend email attaches all bundles to a single email; mocked alert in admin UI lists every bundle by depot.

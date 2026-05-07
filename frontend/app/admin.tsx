@@ -322,7 +322,7 @@ export default function AdminScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontWeight: "700", color: colors.primary }}>{e.user_name}</Text>
                     <Text style={typography.small}>
-                      {e.distance_m}m from {e.depot_name || "any depot"} · {new Date(e.clock_in).toLocaleString()}
+                      {e.distance_m != null ? (e.distance_m > 1000 ? `${(e.distance_m / 1000).toFixed(1)}km` : `${Math.round(e.distance_m)}m`) : "—"} from {e.depot_name || "any depot"} · {new Date(e.clock_in).toLocaleString()}
                     </Text>
                     <Text style={[typography.small, { color: colors.textMuted }]}>
                       {e.lat?.toFixed?.(4)}, {e.lng?.toFixed?.(4)}
