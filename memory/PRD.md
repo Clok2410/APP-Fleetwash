@@ -100,3 +100,18 @@ Built-in **AI Form Summaries** turn every employee submission (incident report, 
 - `/api/admin/off-site-clock-ins` accepts `depot_id`, `user_id`, `date_from`, `date_to` query params (with `days=N` fallback when no date range provided).
 - Off-site tab UI adds chip-based filters for depot and employee plus YYYY-MM-DD date range inputs and an "Apply Filters" button.
 - Native iOS/Android renders an interactive `react-native-maps` MapView with green depot markers + circles (radius) and red employee pins for each off-site entry. Web preview shows a fallback informational card; "Open in Maps" deep-link still available per row.
+
+### 14. Customer Profiles / CRM (NEW)
+- New collection `customers` with embedded `contacts` and `sites` arrays (each site has lat/lng/radius_m), plus a separate `customer_notes` collection.
+- Admin-only CRUD on customers, contacts, sites. Both admin and crew can post **notes** (categories: general / access / hazard / equipment / other; pinned flag). Authors and admins can edit/delete their own notes.
+- Notes list is sorted pinned-first then newest, with category-coloured pills and yellow highlight for pinned items.
+- `CustomerModal` (lazy-loaded from admin tab) renders Profile, Site Contacts, Locations and Crew Notes sections; tap-to-call/email links on phone/email fields.
+
+### 15. Shift-Linked Customers + Arrival Notifications (NEW)
+- Admin can link a shift to `customer_id` + `site_id` (auto-populates `customer_name` + `site_name` on shift response).
+- Clock-in accepts an optional `shift_id`; if omitted, backend auto-resolves the user's currently-active shift (one whose `start <= now <= end`).
+- If the shift has a customer site, clock-in computes haversine distance against the site's `lat/lng/radius_m`:
+  - **Inside radius** → `arrived_on_site=true` → `kind="arrival"` notification to all admins ("Jane Doe arrived at Dublin Hangar (Aer Lingus)")
+  - **Outside radius** → `arrived_on_site=false` → `kind="shift_off_site"` notification ("Jane Doe clocked in 467km from Dublin Hangar")
+- Depot geofencing remains independent — both checks run, so an off-depot AND off-site clock-in produces two notifications.
+- Admin role guard added to `/admin` screen (placed after hooks per Rules of Hooks).

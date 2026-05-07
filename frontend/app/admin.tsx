@@ -24,9 +24,6 @@ import CustomerModal from "../src/components/CustomerModal";
 export default function AdminScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  if (user && user.role !== "admin") {
-    return <Redirect href="/(tabs)/home" />;
-  }
   const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "users" | "depots" | "offsite" | "customers">("holidays");
   const [holidays, setHolidays] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
@@ -136,6 +133,11 @@ export default function AdminScreen() {
       setDigestBusy(false);
     }
   };
+
+  // Role guard placed AFTER all hooks to comply with Rules of Hooks
+  if (user && user.role !== "admin") {
+    return <Redirect href="/(tabs)/home" />;
+  }
 
   useFocusEffect(
     useCallback(() => {
