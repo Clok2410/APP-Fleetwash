@@ -1143,11 +1143,28 @@ async def send_weekly_digest(current=Depends(require_admin)):
 
 
 @api.get("/admin/off-site-clock-ins")
-async def list_off_site(current=Depends(require_admin), days: int = 14):
-    since = now_utc() - timedelta(days=days)
-    docs = await db.clock_entries.find(
-        {"off_site": True, "clock_in": {"$gte": since}}
-    ).sort("clock_in", -1).to_list(500)
+async def list_off_site(
+    current=Depends(require_admin),
+    days: int = 14,
+    depot_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    q: Dict[str, Any] = {"off_site": True}
+    rng: Dict[str, Any] = {}
+    if date_from:
+        rng["$gte"] = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+    if date_to:
+        rng["$lte"] = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc) + timedelta(days=1)
+    if not rng:
+        rng["$gte"] = now_utc() - timedelta(days=days)
+    q["clock_in"] = rng
+    if depot_id:
+        q["depot_id"] = depot_id
+    if user_id:
+        q["user_id"] = user_id
+    docs = await db.clock_entries.find(q).sort("clock_in", -1).to_list(500)
     return [serialize(d) for d in docs]
 
 

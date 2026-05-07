@@ -17,6 +17,7 @@ import { api } from "../src/api";
 import { colors, spacing, radius, typography } from "../src/theme";
 import FormBuilderModal from "../src/components/FormBuilderModal";
 import StatsModal from "../src/components/StatsModal";
+import OffsiteMap from "../src/components/OffsiteMap";
 
 export default function AdminScreen() {
   const router = useRouter();
@@ -27,6 +28,10 @@ export default function AdminScreen() {
   const [allTemplates, setAllTemplates] = useState<any[]>([]);
   const [depots, setDepots] = useState<any[]>([]);
   const [offsite, setOffsite] = useState<any[]>([]);
+  const [offDepot, setOffDepot] = useState<string>("");
+  const [offUser, setOffUser] = useState<string>("");
+  const [offFrom, setOffFrom] = useState<string>("");
+  const [offTo, setOffTo] = useState<string>("");
   const [depotModal, setDepotModal] = useState(false);
   const [dName, setDName] = useState("");
   const [dLat, setDLat] = useState("");
@@ -52,13 +57,18 @@ export default function AdminScreen() {
 
   const load = useCallback(async () => {
     try {
+      const offsiteParams: any = {};
+      if (offDepot) offsiteParams.depot_id = offDepot;
+      if (offUser) offsiteParams.user_id = offUser;
+      if (offFrom) offsiteParams.date_from = offFrom;
+      if (offTo) offsiteParams.date_to = offTo;
       const [h, u, s, t, d, o] = await Promise.all([
         api.get("/holidays/requests", { params: { all: true } }),
         api.get("/users"),
         api.get("/shifts", { params: { all: true } }),
         api.get("/forms/templates"),
         api.get("/depots"),
-        api.get("/admin/off-site-clock-ins").catch(() => ({ data: [] })),
+        api.get("/admin/off-site-clock-ins", { params: offsiteParams }).catch(() => ({ data: [] })),
       ]);
       setHolidays(h.data);
       setUsers(u.data);
@@ -67,7 +77,7 @@ export default function AdminScreen() {
       setDepots(d.data);
       setOffsite(o.data || []);
     } catch {}
-  }, []);
+  }, [offDepot, offUser, offFrom, offTo]);
 
   const openInMaps = (lat: number, lng: number) => {
     const url = Platform.select({
@@ -310,7 +320,83 @@ export default function AdminScreen() {
 
         {tab === "offsite" && (
           <>
-            <Text style={[typography.label, { marginBottom: 8 }]}>Last 14 days</Text>
+            <OffsiteMap entries={offsite} depots={depots} />
+
+            <View style={{ marginBottom: 8, gap: 6 }}>
+              <Text style={typography.label}>Filter by depot</Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                <TouchableOpacity
+                  testID="off-depot-all"
+                  style={[styles.typeChip, !offDepot && { backgroundColor: colors.primary }]}
+                  onPress={() => setOffDepot("")}
+                >
+                  <Text style={{ color: !offDepot ? "#fff" : colors.primary, fontWeight: "600", fontSize: 12 }}>All</Text>
+                </TouchableOpacity>
+                {depots.map((d) => (
+                  <TouchableOpacity
+                    key={d.id}
+                    testID={`off-depot-${d.id}`}
+                    style={[styles.typeChip, offDepot === d.id && { backgroundColor: colors.primary }]}
+                    onPress={() => setOffDepot(d.id)}
+                  >
+                    <Text style={{ color: offDepot === d.id ? "#fff" : colors.primary, fontWeight: "600", fontSize: 12 }}>
+                      {d.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[typography.label, { marginTop: 8 }]}>Filter by employee</Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                <TouchableOpacity
+                  testID="off-user-all"
+                  style={[styles.typeChip, !offUser && { backgroundColor: colors.primary }]}
+                  onPress={() => setOffUser("")}
+                >
+                  <Text style={{ color: !offUser ? "#fff" : colors.primary, fontWeight: "600", fontSize: 12 }}>All</Text>
+                </TouchableOpacity>
+                {users.map((u) => (
+                  <TouchableOpacity
+                    key={u.id}
+                    testID={`off-user-${u.id}`}
+                    style={[styles.typeChip, offUser === u.id && { backgroundColor: colors.primary }]}
+                    onPress={() => setOffUser(u.id)}
+                  >
+                    <Text style={{ color: offUser === u.id ? "#fff" : colors.primary, fontWeight: "600", fontSize: 12 }}>
+                      {u.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
+                <TextInput
+                  testID="off-from"
+                  style={[styles.input, { flex: 1, marginTop: 0 }]}
+                  placeholder="From (YYYY-MM-DD)"
+                  value={offFrom}
+                  onChangeText={setOffFrom}
+                  placeholderTextColor={colors.textMuted}
+                />
+                <TextInput
+                  testID="off-to"
+                  style={[styles.input, { flex: 1, marginTop: 0 }]}
+                  placeholder="To (YYYY-MM-DD)"
+                  value={offTo}
+                  onChangeText={setOffTo}
+                  placeholderTextColor={colors.textMuted}
+                />
+              </View>
+              <TouchableOpacity
+                testID="off-apply"
+                style={[styles.modalBtn, { backgroundColor: colors.primary, height: 40, marginTop: 4 }]}
+                onPress={load}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Apply Filters</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[typography.label, { marginBottom: 8 }]}>{offsite.length} result{offsite.length === 1 ? "" : "s"}</Text>
             {offsite.length === 0 ? (
               <Text style={typography.body}>✓ No off-site clock-ins.</Text>
             ) : (
