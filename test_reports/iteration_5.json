@@ -1,0 +1,43 @@
+{
+  "summary": "Iter 5 testing — Off-site admin list + per-depot weekly digest. Backend: 13/13 pytest cases pass (off-site list admin-only, days param honored, FormTemplateIn accepts depot_id, weekly-digest returns bundles[] + digest_ids[] with one bundle per depot, depot-tied checklist appears in correct depot's CSV, digest list/download work, regression on depots/notifications/scan-alerts/clock-status passes). Frontend: critical UI rendering bug — 'Off-Site · 5' tab renders correctly with badge count, but tapping it shows a BLANK screen because admin.tsx has NO `{tab === \"offsite\" && (...)}` rendering block — the offsite rows, distance, depot, lat/lng, and 'Map' button are NEVER rendered. FormBuilderModal depot picker chips work correctly. sendDigest alert message still references stale `data.filename` instead of the new `data.bundles[]`.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "/app/frontend/app/admin.tsx", "issue": "Off-site tab content block is MISSING. After line 306 (`{tab === \"depots\" && ...}`), there's no `{tab === \"offsite\" && (...)}` block. State `offsite` is loaded via /api/admin/off-site-clock-ins but never rendered. Result: tab selectable, badge count visible (e.g. 'Off-Site · 5'), but tapping shows entirely blank ScrollView.", "testID": "admin-tab-offsite", "priority": "CRITICAL"},
+      {"component": "/app/frontend/app/admin.tsx (offsite list)", "issue": "Required testIDs `map-{id}` for 'Map' buttons do not exist in DOM (0 found via [data-testid^=\"map-\"]). Need TouchableOpacity per row that calls openInMaps(lat, lng) with testID={`map-${o.id}`}.", "testID": "map-{id}", "priority": "CRITICAL"},
+      {"component": "/app/frontend/app/admin.tsx :: sendDigest()", "issue": "Alert.alert message reads `File: ${data.filename}` but new POST /admin/weekly-digest response contains `bundles: [{depot_name, filename}, ...]` and `digest_ids: [...]` — `data.filename` is undefined. Should iterate over bundles to list per-depot files.", "testID": "send-digest-btn", "priority": "HIGH"}
+    ],
+    "integration_issues": [
+      {"flow": "Admin → Off-site review tab → Open in Maps", "issue": "End-to-end flow non-functional from UI because the offsite list view block is not implemented. Backend API GET /api/admin/off-site-clock-ins works (returns 5 entries during test).", "affected_testIDs": ["admin-tab-offsite", "map-{id}"]}
+    ],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter5_offsite_perdepot_digest.py",
+    "/app/test_reports/pytest/iter5_results.xml"
+  ],
+  "action_items": [
+    "Add a `{tab === \"offsite\" && (...)}` rendering block in /app/frontend/app/admin.tsx that maps `offsite[]` state to rows showing user_name, depot_name, distance_m, lat/lng, clock_in time, plus a TouchableOpacity testID={`map-${o.id}`} that calls openInMaps(o.lat, o.lng). Show an empty-state Text when `offsite.length === 0`.",
+    "Update sendDigest alert in admin.tsx to display bundles list, e.g. `data.bundles.map(b => `${b.depot_name}: ${b.filename}`).join('\\n')` instead of `data.filename`.",
+    "(Optional) When `offsite.length > 0`, badge could turn red for visual alert clarity."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1281 lines — strongly recommend splitting (auth, clock, forms, depots, digest, notifications) for maintainability.",
+    "Backend build_per_depot_digests groups templates with no depot_id under 'Unassigned' — works correctly. Bundle CSV correctly contains the assigned checklist's title and excludes templates from other depots (verified).",
+    "Frontend admin.tsx has the offsite tab in the tabs array (line 157) and loads data into state (line 61), but never renders any view for it. Likely an incomplete edit during Iter 5.",
+    "Resend remains MOCKED when RESEND_API_KEY is empty. Per-depot digests log `[MOCKED EMAIL] Per-depot digest to ['admin@company.com'] | Files: [...]` correctly."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter5_offsite_perdepot_digest.py (new)"
+  ],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "60% — tab + badge work, depot chips work, digest button still callable, but off-site list + map button missing & digest alert text stale"},
+  "seed_data_creation": "Tests create TEST_-prefixed depots and checklist templates and clean them up. One off-site clock-in entry was generated to seed the list.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend public URL: https://b863035e-804d-4d41-9158-321900c27687.preview.emergentagent.com. Use admin@company.com/Admin@123 + jane@company.com/Staff@123. Pytest file `test_iter5_offsite_perdepot_digest.py` runs cleanly in ~4s. After main agent fixes admin.tsx offsite tab rendering, re-run frontend smoke: login → Admin pill → admin-tab-offsite → expect rows + map-{id} buttons → tap one and verify Linking.openURL invoked (in headless web you can spy on window.open via page.on('popup') or page.evaluate to override `window.open` and check it received maps URL). Also verify Alert text after Send Weekly Digest now lists per-depot bundles (not 'undefined').",
+  "rca_of_issue": "ROOT CAUSE: /app/frontend/app/admin.tsx — the offsite tab was added to the tabs array (line 157) and state was wired (lines 29, 61, 165), but the conditional rendering block `{tab === 'offsite' && (...)}` was never added between lines 306 and 309 (right after the depots block). Reproduction: Login as admin → tap 'Admin' pill → tap 'Off-Site · N' tab → screen below tabs is completely blank. MITIGATION: Add the missing JSX block rendering offsite[] rows with `map-${o.id}` testID buttons that call `openInMaps(o.lat, o.lng)`."
+}

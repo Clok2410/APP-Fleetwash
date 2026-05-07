@@ -12,6 +12,7 @@ import {
 import { useFocusEffect, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Linking, Platform } from "react-native";
 import { api } from "../src/api";
 import { colors, spacing, radius, typography } from "../src/theme";
 import FormBuilderModal from "../src/components/FormBuilderModal";
@@ -19,12 +20,13 @@ import StatsModal from "../src/components/StatsModal";
 
 export default function AdminScreen() {
   const router = useRouter();
-  const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "users" | "depots">("holidays");
+  const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "users" | "depots" | "offsite">("holidays");
   const [holidays, setHolidays] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [allShifts, setAllShifts] = useState<any[]>([]);
   const [allTemplates, setAllTemplates] = useState<any[]>([]);
   const [depots, setDepots] = useState<any[]>([]);
+  const [offsite, setOffsite] = useState<any[]>([]);
   const [depotModal, setDepotModal] = useState(false);
   const [dName, setDName] = useState("");
   const [dLat, setDLat] = useState("");
@@ -50,20 +52,30 @@ export default function AdminScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [h, u, s, t, d] = await Promise.all([
+      const [h, u, s, t, d, o] = await Promise.all([
         api.get("/holidays/requests", { params: { all: true } }),
         api.get("/users"),
         api.get("/shifts", { params: { all: true } }),
         api.get("/forms/templates"),
         api.get("/depots"),
+        api.get("/admin/off-site-clock-ins").catch(() => ({ data: [] })),
       ]);
       setHolidays(h.data);
       setUsers(u.data);
       setAllShifts(s.data);
       setAllTemplates(t.data);
       setDepots(d.data);
+      setOffsite(o.data || []);
     } catch {}
   }, []);
+
+  const openInMaps = (lat: number, lng: number) => {
+    const url = Platform.select({
+      ios: `https://maps.apple.com/?ll=${lat},${lng}&q=Off-site`,
+      default: `https://www.google.com/maps?q=${lat},${lng}`,
+    })!;
+    Linking.openURL(url);
+  };
 
   const createDepot = async () => {
     if (!dName || !dLat || !dLng) return Alert.alert("Missing info");
@@ -142,14 +154,16 @@ export default function AdminScreen() {
       </View>
 
       <View style={styles.tabs}>
-        {(["holidays", "shifts", "forms", "users", "depots"] as const).map((t) => (
+        {(["holidays", "shifts", "forms", "users", "depots", "offsite"] as const).map((t) => (
           <TouchableOpacity
             key={t}
             testID={`admin-tab-${t}`}
             onPress={() => setTab(t)}
             style={[styles.tab, tab === t && styles.tabActive]}
           >
-            <Text style={[styles.tabText, tab === t && styles.tabTextActive]}>{t}</Text>
+            <Text style={[styles.tabText, tab === t && styles.tabTextActive]}>
+              {t === "offsite" ? `off-site${offsite.length ? ` · ${offsite.length}` : ""}` : t}
+            </Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -347,7 +361,7 @@ export default function AdminScreen() {
         </View>
       </Modal>
 
-      <FormBuilderModal visible={formModal} onClose={() => setFormModal(false)} onPublished={load} />
+      <FormBuilderModal visible={formModal} onClose={() => setFormModal(false)} onPublished={load} depots={depots} />
       <StatsModal template={statsTpl} onClose={() => setStatsTpl(null)} />
 
       {/* Depot Modal */}

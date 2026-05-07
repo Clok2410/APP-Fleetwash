@@ -178,6 +178,7 @@ class FormTemplateIn(BaseModel):
     kind: str = "form"  # "form" | "checklist"
     checklist_items: Optional[List[ChecklistItemIn]] = None
     target_percent: Optional[float] = None  # e.g. 100.0 means all items must be done
+    depot_id: Optional[str] = None  # optional: tie checklist to a depot
 
 
 class FormSubmissionIn(BaseModel):
@@ -600,6 +601,7 @@ async def create_template(body: FormTemplateIn, current=Depends(require_admin)):
         "kind": body.kind,
         "checklist_items": [c.dict() for c in (body.checklist_items or [])],
         "target_percent": body.target_percent,
+        "depot_id": body.depot_id,
         "created_by": current["id"],
         "created_by_name": current["name"],
         "created_at": now_utc(),
@@ -1002,7 +1004,7 @@ async def delete_depot(did: str, _=Depends(require_admin)):
 
 # ---------- Weekly Digest ----------
 async def build_digest_csv() -> tuple[str, str]:
-    """Build CSV string of all checklist compliance for last 7 days. Returns (filename, csv_text)."""
+    """[Legacy] single CSV summary. Kept for backwards compat."""
     import csv as _csv
     now = now_utc()
     week_ago = now - timedelta(days=7)
@@ -1029,51 +1031,124 @@ async def build_digest_csv() -> tuple[str, str]:
     return f"staffhub-digest-{now.date()}.csv", buf.getvalue()
 
 
+async def build_per_depot_digests() -> list[dict]:
+    """Build one CSV per depot (templates with no depot_id grouped under 'Unassigned').
+
+    Returns list of {depot_id, depot_name, filename, csv}.
+    """
+    import csv as _csv
+    now = now_utc()
+    week_ago = now - timedelta(days=7)
+    depots = {d["id"]: d for d in await db.depots.find().to_list(500)}
+    templates = await db.form_templates.find({"kind": "checklist"}).to_list(500)
+    groups: dict[str, list] = {}
+    for tpl in templates:
+        groups.setdefault(tpl.get("depot_id") or "", []).append(tpl)
+
+    out = []
+    for depot_id, tpls in groups.items():
+        depot_name = depots[depot_id]["name"] if depot_id and depot_id in depots else "Unassigned"
+        slug = depot_name.replace(" ", "_")
+        buf = io.StringIO()
+        w = _csv.writer(buf)
+        w.writerow([f"StaffHub Weekly Digest — {depot_name}"])
+        w.writerow([f"Range: {week_ago.date()} → {now.date()}"])
+        w.writerow([])
+        w.writerow(["Checklist", "Target %", "Submissions", "Overall %", "On Target"])
+        for tpl in tpls:
+            items = tpl.get("checklist_items") or []
+            target = tpl.get("target_percent") or 100.0
+            subs = await db.form_submissions.find({"template_id": tpl["id"], "created_at": {"$gte": week_ago}}).to_list(500)
+            total_done = 0; total_possible = 0
+            for it in items:
+                for sk in it["sub_keys"]:
+                    total_possible += len(subs)
+                    for s in subs:
+                        if (s.get("values") or {}).get(f"{it['id']}_{sk}") in (True, "true", "True"):
+                            total_done += 1
+            overall = round((total_done / total_possible * 100.0) if total_possible else 0.0, 1)
+            w.writerow([tpl["title"], target, len(subs), overall, "YES" if overall >= target else "NO"])
+        out.append({
+            "depot_id": depot_id or None,
+            "depot_name": depot_name,
+            "filename": f"staffhub-digest-{slug}-{now.date()}.csv",
+            "csv": buf.getvalue(),
+        })
+    return out
+
+
 @api.post("/admin/weekly-digest")
 async def send_weekly_digest(current=Depends(require_admin)):
-    filename, csv_text = await build_digest_csv()
-    # Save server-side artifact
-    record = {
-        "id": str(uuid.uuid4()),
-        "filename": filename,
-        "csv": csv_text,
-        "generated_by": current["name"],
-        "created_at": now_utc(),
-    }
-    await db.digests.insert_one(record)
+    bundles = await build_per_depot_digests()
+    if not bundles:
+        # Fallback to single legacy CSV if no checklists exist
+        fn, txt = await build_digest_csv()
+        bundles = [{"depot_id": None, "depot_name": "All", "filename": fn, "csv": txt}]
+    digest_ids = []
+    for b in bundles:
+        rec = {
+            "id": str(uuid.uuid4()),
+            "filename": b["filename"],
+            "depot_id": b["depot_id"],
+            "depot_name": b["depot_name"],
+            "csv": b["csv"],
+            "generated_by": current["name"],
+            "created_at": now_utc(),
+        }
+        await db.digests.insert_one(rec)
+        digest_ids.append(rec["id"])
 
-    # Email all admins (mocked unless RESEND_API_KEY set)
     api_key = os.environ.get("RESEND_API_KEY", "").strip()
     sender = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
     admins = await db.users.find({"role": "admin", "active": {"$ne": False}}).to_list(200)
     recipients = [a["email"] for a in admins]
+    rows = "".join([f"<li><b>{b['depot_name']}</b> — {b['filename']}</li>" for b in bundles])
     html = (
         "<h2>Weekly Compliance Digest</h2>"
         f"<p>Generated by {current['name']}.</p>"
-        "<p>The attached CSV summarises every checklist's compliance over the last 7 days.</p>"
+        f"<p>The attached CSV files break down checklist compliance per depot over the last 7 days.</p>"
+        f"<ul>{rows}</ul>"
     )
     sent = []
-    if api_key:
+    if api_key and recipients:
         try:
-            import base64
-            import resend
+            import base64, resend
             resend.api_key = api_key
             params = {
                 "from": sender,
                 "to": recipients,
-                "subject": "StaffHub — Weekly Compliance Digest",
+                "subject": "StaffHub — Weekly Compliance Digest (per-depot)",
                 "html": html,
-                "attachments": [{"filename": filename, "content": base64.b64encode(csv_text.encode()).decode()}],
+                "attachments": [
+                    {"filename": b["filename"], "content": base64.b64encode(b["csv"].encode()).decode()}
+                    for b in bundles
+                ],
             }
             email = await asyncio.to_thread(resend.Emails.send, params)
             sent = recipients
-            logger.info(f"Sent digest email id={email.get('id')} to {recipients}")
+            logger.info(f"Sent per-depot digest id={email.get('id')} to {recipients}")
         except Exception as e:
             logger.exception("Resend send failed")
-            return {"ok": False, "error": str(e), "filename": filename, "digest_id": record["id"]}
+            return {"ok": False, "error": str(e), "digest_ids": digest_ids}
     else:
-        logger.info(f"[MOCKED EMAIL] To {recipients} | Subject: StaffHub Weekly Digest | Attachment: {filename} ({len(csv_text)} bytes)")
-    return {"ok": True, "mocked": not bool(api_key), "recipients": recipients, "sent": sent, "digest_id": record["id"], "filename": filename}
+        logger.info(f"[MOCKED EMAIL] Per-depot digest to {recipients} | Files: {[b['filename'] for b in bundles]}")
+    return {
+        "ok": True,
+        "mocked": not bool(api_key),
+        "recipients": recipients,
+        "sent": sent,
+        "digest_ids": digest_ids,
+        "bundles": [{"depot_name": b["depot_name"], "filename": b["filename"]} for b in bundles],
+    }
+
+
+@api.get("/admin/off-site-clock-ins")
+async def list_off_site(current=Depends(require_admin), days: int = 14):
+    since = now_utc() - timedelta(days=days)
+    docs = await db.clock_entries.find(
+        {"off_site": True, "clock_in": {"$gte": since}}
+    ).sort("clock_in", -1).to_list(500)
+    return [serialize(d) for d in docs]
 
 
 @api.get("/admin/digests")

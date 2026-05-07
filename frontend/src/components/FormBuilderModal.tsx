@@ -18,13 +18,15 @@ type Props = {
   visible: boolean;
   onClose: () => void;
   onPublished: () => void;
+  depots?: { id: string; name: string }[];
 };
 
-export default function FormBuilderModal({ visible, onClose, onPublished }: Props) {
+export default function FormBuilderModal({ visible, onClose, onPublished, depots = [] }: Props) {
   const [fKind, setFKind] = useState<"form" | "checklist">("form");
   const [fTitle, setFTitle] = useState("");
   const [fDesc, setFDesc] = useState("");
   const [fTarget, setFTarget] = useState("100");
+  const [fDepotId, setFDepotId] = useState<string>("");
   const [fields, setFields] = useState<any[]>([
     { key: "name", label: "Full Name", type: "text", required: true },
   ]);
@@ -62,6 +64,7 @@ export default function FormBuilderModal({ visible, onClose, onPublished }: Prop
         fields: fKind === "form" ? fields : [],
         checklist_items: fKind === "checklist" ? items : [],
         target_percent: fKind === "checklist" ? parseFloat(fTarget) || 100 : null,
+        depot_id: fKind === "checklist" && fDepotId ? fDepotId : null,
       });
       reset();
       onPublished();
@@ -203,6 +206,37 @@ export default function FormBuilderModal({ visible, onClose, onPublished }: Prop
                 keyboardType="numeric"
                 placeholderTextColor={colors.textMuted}
               />
+
+              {depots.length > 0 && (
+                <>
+                  <Text style={[typography.label, { marginTop: 16 }]}>Depot (optional)</Text>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+                    <TouchableOpacity
+                      testID="depot-pick-none"
+                      onPress={() => setFDepotId("")}
+                      style={[s.chip, !fDepotId && { backgroundColor: colors.primary }]}
+                    >
+                      <Text style={{ color: !fDepotId ? "#fff" : colors.primary, fontWeight: "600", fontSize: 12 }}>
+                        None
+                      </Text>
+                    </TouchableOpacity>
+                    {depots.map((d) => (
+                      <TouchableOpacity
+                        key={d.id}
+                        testID={`depot-pick-${d.id}`}
+                        onPress={() => setFDepotId(d.id)}
+                        style={[s.chip, fDepotId === d.id && { backgroundColor: colors.primary }]}
+                      >
+                        <Text
+                          style={{ color: fDepotId === d.id ? "#fff" : colors.primary, fontWeight: "600", fontSize: 12 }}
+                        >
+                          {d.name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
 
               <Text style={[typography.label, { marginTop: 16 }]}>Items ({items.length})</Text>
               {items.map((it, idx) => (
