@@ -711,6 +711,109 @@ async def summarize_submission(sid: str, _=Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=f"AI failure: {e}")
 
 
+@api.get("/forms/templates/{tid}/stats/export")
+async def export_stats(tid: str, format: str = "csv", date_from: Optional[str] = None, date_to: Optional[str] = None, _=Depends(get_current_user)):
+    if format not in ("csv", "pdf"):
+        raise HTTPException(status_code=400, detail="format must be csv or pdf")
+    tpl = await db.form_templates.find_one({"id": tid})
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    q: Dict[str, Any] = {"template_id": tid}
+    if date_from or date_to:
+        rng: Dict[str, Any] = {}
+        if date_from:
+            rng["$gte"] = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+        if date_to:
+            rng["$lte"] = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc) + timedelta(days=1)
+        q["created_at"] = rng
+    subs = await db.form_submissions.find(q).to_list(2000)
+    items = tpl.get("checklist_items") or []
+    target = tpl.get("target_percent") or 100.0
+
+    rows = []
+    total_done = 0
+    total_possible = 0
+    for it in items:
+        for sk in it["sub_keys"]:
+            done = sum(1 for s in subs if (s.get("values") or {}).get(f"{it['id']}_{sk}") in (True, "true", "True"))
+            missed = len(subs) - done
+            rows.append((it["label"], sk, done, missed, len(subs)))
+            total_done += done
+            total_possible += len(subs)
+    overall = round((total_done / total_possible * 100.0) if total_possible else 0.0, 1)
+
+    if format == "csv":
+        import csv as _csv
+        buf = io.StringIO()
+        w = _csv.writer(buf)
+        w.writerow([f"Template: {tpl['title']}"])
+        w.writerow([f"Range: {date_from or 'all'} → {date_to or 'now'}"])
+        w.writerow([f"Submissions: {len(subs)}", f"Target: {target}%", f"Overall: {overall}%", f"On target: {overall >= target}"])
+        w.writerow([])
+        w.writerow(["Item", "Sub-task", "Done", "Missed", "Submissions"])
+        for r in rows:
+            w.writerow(r)
+        out = io.BytesIO(buf.getvalue().encode("utf-8"))
+        return StreamingResponse(out, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{tpl["title"]}-stats.csv"'})
+
+    # PDF
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib import colors as rcolors
+
+    pdf_buf = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buf, pagesize=LETTER)
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph(f"<b>{tpl['title']} — Stats Report</b>", styles["Title"]),
+        Paragraph(f"Range: {date_from or 'all'} → {date_to or 'now'}", styles["Normal"]),
+        Paragraph(f"Submissions: {len(subs)} | Target: {target}% | <b>Overall: {overall}%</b> ({'On target' if overall >= target else 'Below target'})", styles["Normal"]),
+        Spacer(1, 12),
+    ]
+    table_data = [["Item", "Sub-task", "Done", "Missed", "Submissions"]] + [list(map(str, r)) for r in rows]
+    t = Table(table_data, hAlign="LEFT")
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), rcolors.HexColor("#0A0A0A")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), rcolors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.25, rcolors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [rcolors.white, rcolors.HexColor("#F4F4F5")]),
+    ]))
+    story.append(t)
+    doc.build(story)
+    pdf_buf.seek(0)
+    return StreamingResponse(pdf_buf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{tpl["title"]}-stats.pdf"'})
+
+
+@api.get("/admin/checklist-alerts")
+async def checklist_alerts(_=Depends(require_admin)):
+    """Return checklist templates that are below target today or missing today's submission."""
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    templates = await db.form_templates.find({"kind": "checklist"}).to_list(500)
+    alerts = []
+    for tpl in templates:
+        items = tpl.get("checklist_items") or []
+        target = tpl.get("target_percent") or 100.0
+        subs = await db.form_submissions.find({"template_id": tpl["id"], "created_at": {"$gte": today_start}}).to_list(500)
+        if not subs:
+            alerts.append({"template_id": tpl["id"], "title": tpl["title"], "reason": "No submission today", "overall_percent": 0, "target_percent": target})
+            continue
+        total_done = 0
+        total_possible = 0
+        for it in items:
+            for sk in it["sub_keys"]:
+                total_possible += len(subs)
+                key = f"{it['id']}_{sk}"
+                for s in subs:
+                    if (s.get("values") or {}).get(key) in (True, "true", "True"):
+                        total_done += 1
+        overall = (total_done / total_possible * 100.0) if total_possible else 0.0
+        if overall < target:
+            alerts.append({"template_id": tpl["id"], "title": tpl["title"], "reason": "Below target", "overall_percent": round(overall, 1), "target_percent": target, "submissions": len(subs)})
+    return alerts
+
+
 # ----------------- Startup -----------------
 @app.on_event("startup")
 async def on_startup():

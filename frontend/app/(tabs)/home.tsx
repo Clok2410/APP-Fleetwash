@@ -30,6 +30,7 @@ export default function HomeScreen() {
   const [status, setStatus] = useState<{ clocked_in: boolean; entry: any } | null>(null);
   const [balance, setBalance] = useState<any>(null);
   const [todayShifts, setTodayShifts] = useState<any[]>([]);
+  const [alerts, setAlerts] = useState<any[]>([]);
   const [tick, setTick] = useState(0);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -45,10 +46,16 @@ export default function HomeScreen() {
       setBalance(b.data);
       const today = new Date().toISOString().slice(0, 10);
       setTodayShifts((sh.data || []).filter((x: any) => (x.start || "").slice(0, 10) === today));
+      if (user?.role === "admin") {
+        try {
+          const a = await api.get("/admin/checklist-alerts");
+          setAlerts(a.data || []);
+        } catch {}
+      }
     } catch (e: any) {
       // silent
     }
-  }, []);
+  }, [user?.role]);
 
   useFocusEffect(
     useCallback(() => {
@@ -177,6 +184,33 @@ export default function HomeScreen() {
           </View>
         </View>
 
+        {user?.role === "admin" && alerts.length > 0 && (
+          <View style={styles.alertCard} testID="admin-alerts">
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+              <Feather name="alert-triangle" size={16} color={colors.alert} />
+              <Text style={[typography.label, { marginLeft: 6, color: colors.alert }]}>
+                {alerts.length} checklist{alerts.length > 1 ? "s" : ""} need attention today
+              </Text>
+            </View>
+            {alerts.map((a) => (
+              <TouchableOpacity
+                key={a.template_id}
+                style={styles.alertRow}
+                testID={`alert-${a.template_id}`}
+                onPress={() => router.push("/admin")}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "700", color: colors.primary }}>{a.title}</Text>
+                  <Text style={typography.small}>
+                    {a.reason} · {a.overall_percent}% / target {a.target_percent}%
+                  </Text>
+                </View>
+                <Feather name="chevron-right" size={16} color={colors.textMuted} />
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
         <View style={{ marginTop: spacing.lg }}>
           <Text style={typography.label}>Quick Actions</Text>
           <View style={styles.quickGrid}>
@@ -288,4 +322,19 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   qaText: { flex: 1, fontSize: 15, fontWeight: "600", color: colors.primary },
+  alertCard: {
+    marginTop: spacing.lg,
+    backgroundColor: "#FEF2F2",
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+  },
+  alertRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    borderTopColor: "#FECACA",
+    borderTopWidth: 1,
+  },
 });

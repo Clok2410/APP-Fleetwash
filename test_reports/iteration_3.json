@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 3 (CSV/PDF export + admin alerts + modal refactor) — ALL TESTS PASSING. Backend: 14/14 pytest tests pass (test_alerts_export.py 10 + test_checklist.py 4). New endpoints verified: GET /api/admin/checklist-alerts (admin-only, staff gets 403; flags 'Below target' and 'No submission today' templates with overall_percent + target_percent), GET /api/forms/templates/{id}/stats/export?format=csv (text/csv with Template/Range/Submissions/Target/Overall headers + Item,Sub-task,Done,Missed,Submissions table), ?format=pdf (application/pdf, valid %PDF magic bytes, >500 bytes), date_from/date_to filter works (zero-subs window returns 'Submissions: 0'), invalid format → 400, unknown tpl → 404, no auth → 401/403. Regression: /stats schema unchanged (overall_done/overall_possible/overall_percent/on_target/items/submissions/target_percent), regular form kind create+submit still works. Frontend (mobile 375x812): Admin login → Home shows red 'admin-alerts' card with 5 alert rows (alert-{id}) including 'Below target 50%/100%' and 'No submission today 0%/100%'. Staff login → admin-alerts card NOT rendered (correct). Admin Panel → Forms → 'Create Form/Checklist' opens FormBuilderModal with kind-form/kind-checklist chips, switching to checklist reveals checklist-target + checklist-bulk inputs. Stats button on a template opens StatsModal with range-day/week/month/all + export-csv + export-pdf testIDs all visible; per-item card shows HL29 100%, HL30 50%, HL31 0%; Export CSV click triggers web blob download without errors. Refactor: admin.tsx reduced 735 → 298 lines; modals extracted to /app/frontend/src/components/FormBuilderModal.tsx (299 lines) and StatsModal.tsx (273 lines). No red-screen errors, only 1 benign 'props.pointerEvents deprecated' warning.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_alerts_export.py",
+    "/app/backend/tests/test_checklist.py",
+    "/app/test_reports/pytest/iter3_results.xml"
+  ],
+  "action_items": [
+    "Optional: support a download with file save on web (currently uses anchor click which works fine in Chromium; verify on Safari).",
+    "Optional: replace deprecated `props.pointerEvents` with `style.pointerEvents` somewhere in component tree to silence React Native Web warning."
+  ],
+  "critical_code_review_comments": [
+    "checklist-alerts endpoint is admin-gated via require_admin (verified 403 for staff).",
+    "Export endpoint correctly streams CSV via StreamingResponse with text/csv and PDF via reportlab with application/pdf; Content-Disposition attachment header set.",
+    "StatsModal.exportFile uses Platform.OS branch — web uses fetch+blob+anchor download; native uses FileSystem.downloadAsync + Sharing.shareAsync. Token retrieved via getToken() and passed as Authorization header — correct.",
+    "FormBuilderModal owns its own state and resets on publish — clean separation. admin.tsx is now ~298 lines, well under the 700 split threshold."
+  ],
+  "updated_files": ["/app/backend/tests/test_alerts_export.py"],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100%"},
+  "seed_data_creation": "Backend tests created TEST_AlertWash (2 items × EXT/INT, target 100, partial submission today to trigger Below target), TEST_RegrForm. Pre-existing TEST_TruckWash, UI_TruckWash, Aer Lingus Truck Wash visible in admin alerts.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend reload watches /app/backend so test files in tests/ trigger reloads. Use BASE = EXPO_PUBLIC_BACKEND_URL. testIDs: admin-alerts, alert-{template_id}, open-form-builder, kind-form, kind-checklist, checklist-target, checklist-subkeys, checklist-bulk, checklist-bulk-add, publish-template, stats-{tplId}, range-day/week/month/all, export-csv, export-pdf. CSV export Content-Disposition uses template title in filename — be aware of special chars if titles get exotic."
+}
