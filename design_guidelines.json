@@ -1,0 +1,91 @@
+{
+  "theme": "Light",
+  "archetype": "Archetype 4: Swiss & High-Contrast (Adapted for Mobile SaaS)",
+  "rationale": "For a workforce management app (Connecteam-style), clarity, authority, and function are paramount. High-contrast elements guide action (like Clock In/Out) instantly. Removing decorative clutter reduces cognitive load for employees. We blend Swiss brutalist structure with 'Soft Utility' typography for approachability.",
+  "colors": {
+    "background": "#FFFFFF",
+    "surface": "#F4F4F5",
+    "surface_secondary": "#E4E4E7",
+    "primary": "#0A0A0A",
+    "primary_foreground": "#FFFFFF",
+    "brand_accent": "#4338CA", 
+    "success": "#10B981",
+    "alert": "#EF4444",
+    "text_primary": "#0A0A0A",
+    "text_secondary": "#52525B",
+    "border": "#E4E4E7"
+  },
+  "typography": {
+    "font_family_primary": "Plus Jakarta Sans",
+    "font_family_secondary": "Plus Jakarta Sans",
+    "hierarchy": {
+      "h1": "text-3xl md:text-4xl font-bold tracking-tight text-[#0A0A0A]",
+      "h2": "text-2xl font-bold tracking-tight text-[#0A0A0A]",
+      "h3": "text-xl font-semibold tracking-tight text-[#0A0A0A]",
+      "body": "text-base font-medium leading-relaxed text-[#52525B]",
+      "label": "text-xs font-bold uppercase tracking-[0.2em] text-[#52525B]"
+    },
+    "guidelines": "Do not exceed text-4xl on mobile. Ensure headings use tight letter spacing. Labels must be uppercase and tracked out."
+  },
+  "layout_and_spacing": {
+    "screen_padding": "px-6",
+    "generous_spacing": "Use 24px (p-6) or 32px (p-8) padding inside cards to prevent content collision.",
+    "border_radius": "rounded-2xl (16px) for cards, rounded-full (9999px) for buttons/pills.",
+    "alignment": "Left-align dense data (schedules, lists). Center-align primary CTAs (Clock In)."
+  },
+  "components": {
+    "bottom_tab_bar": {
+      "style": "Glassmorphism Island",
+      "classes": "absolute bottom-6 mx-6 rounded-full bg-white/70 backdrop-blur-xl border border-zinc-200/50 shadow-lg shadow-zinc-200/50"
+    },
+    "clock_in_button": {
+      "style": "Tactile / High-Contrast",
+      "classes": "h-40 w-40 rounded-full bg-brand_accent text-white font-bold text-xl shadow-[0_8px_32px_rgba(67,56,202,0.3)] flex items-center justify-center border-4 border-white active:scale-95 transition-transform"
+    },
+    "cards": {
+      "style": "Flat with 1px border",
+      "classes": "bg-surface rounded-2xl border border-zinc-200 p-6 shadow-sm"
+    },
+    "form_inputs": {
+      "style": "Solid Fill",
+      "classes": "h-14 bg-surface rounded-xl border border-transparent focus:border-brand_accent focus:bg-white px-4 text-base font-medium text-text_primary transition-colors"
+    },
+    "icons": {
+      "library": "@expo/vector-icons (LucideIcons or Feather)",
+      "usage": "Stroke weight 2px, consistent sizing (24px for tabs, 20px for inline)."
+    }
+  },
+  "interactions_and_motion": {
+    "library": "react-native-reanimated",
+    "tap_states": "All buttons and list items must scale down to 0.97 on active press.",
+    "transitions": "Use fade and slight slide-up for modal/bottom-sheet presentations (e.g., Request Holiday form)."
+  },
+  "accessibility": {
+    "touch_targets": "Minimum 48x48px for all clickable elements.",
+    "contrast": "Text over backgrounds must exceed 4.5:1 ratio. Text inside Clock In/Out buttons must be pure white over dark color.",
+    "testing": "All interactive elements MUST include data-testid attributes (e.g., 'clock-in-button', 'holiday-request-submit')."
+  },
+  "media": {
+    "image_urls": [
+      {
+        "url": "https://images.unsplash.com/photo-1759818291335-bbc89ee510e6?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njd8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMGNsZWFuJTIwd2hpdGUlMjB0ZXh0dXJlfGVufDB8fHx8MTc3ODE1MjgyMXww&ixlib=rb-4.1.0&q=85",
+        "category": "background",
+        "description": "Abstract white snowdrift with soft shadows (Use for Login screen background or Profile Header banner)"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1770058428154-9eee8a6a1fbb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBmcmllbmRseSUyMGhlYWRzaG90JTIwcG9ydHJhaXR8ZW58MHx8fHwxNzc4MTUyODIxfDA&ixlib=rb-4.1.0&q=85",
+        "category": "avatar",
+        "description": "Professional friendly headshot portrait (Use as default dummy avatar for Employee Profile)"
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "You are building an Expo React Native mobile app.",
+    "Do NOT use HTML/Web elements (div, span). Use View, Text, TouchableOpacity, etc. Translate the Tailwind utility classes mentally into StyleSheet or NativeWind classes depending on your exact setup, but follow the visual values strictly.",
+    "Implement the Bottom Tab Bar as a floating island (absolute positioning, margin-bottom) rather than a full-width bottom strip.",
+    "For the Drive/Forms feature, use flat cards with crisp 1px borders for file items.",
+    "The 'Clock In' button should dominate the Home tab visually.",
+    "Adhere strictly to the color palette provided; do not invent new blue/teal shades.",
+    "Never use placeholder URLs for images. Use the provided 'image_urls'."
+  ]
+}
