@@ -18,6 +18,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { api } from "../../src/api";
 import { useAuth } from "../../src/auth";
 import { colors, spacing, radius, typography } from "../../src/theme";
+import PdfFormFillModal from "../../src/components/PdfFormFillModal";
 
 type Field = { key: string; label: string; type: string; required?: boolean; options?: string[] };
 
@@ -25,6 +26,8 @@ export default function FormsScreen() {
   const { user } = useAuth();
   const [tab, setTab] = useState<"templates" | "submissions">("templates");
   const [templates, setTemplates] = useState<any[]>([]);
+  const [pdfTemplates, setPdfTemplates] = useState<any[]>([]);
+  const [activePdfId, setActivePdfId] = useState<string | null>(null);
   const [submissions, setSubmissions] = useState<any[]>([]);
   const [active, setActive] = useState<any>(null); // template being filled
   const [values, setValues] = useState<Record<string, any>>({});
@@ -36,9 +39,18 @@ export default function FormsScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [t, s] = await Promise.all([api.get("/forms/templates"), api.get("/forms/submissions")]);
+      const [t, s, p, ps] = await Promise.all([
+        api.get("/forms/templates"),
+        api.get("/forms/submissions"),
+        api.get("/pdf-forms/templates").catch(() => ({ data: [] })),
+        api.get("/pdf-forms/submissions").catch(() => ({ data: [] })),
+      ]);
       setTemplates(t.data);
-      setSubmissions(s.data);
+      setSubmissions([
+        ...s.data.map((x: any) => ({ ...x, _kind: "form" })),
+        ...(ps.data || []).map((x: any) => ({ ...x, _kind: "pdf" })),
+      ].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)));
+      setPdfTemplates(p.data || []);
     } catch {}
   }, []);
 
@@ -108,6 +120,43 @@ export default function FormsScreen() {
     }
   };
 
+  const sharePdfSubmission = async (sid: string, title: string) => {
+    try {
+      const { data } = await api.get(`/pdf-forms/submissions/${sid}`);
+      const base64 = data?.filled_pdf_base64;
+      if (!base64) {
+        Alert.alert("Missing PDF", "Submission has no PDF data.");
+        return;
+      }
+      // Lazy import to keep web bundle lean
+      const FileSystem = await import("expo-file-system");
+      const Sharing = await import("expo-sharing");
+      const { Platform } = await import("react-native");
+      if (Platform.OS === "web") {
+        const byteChars = atob(base64);
+        const bytes = new Uint8Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+        const blob = new Blob([bytes], { type: "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        if (typeof window !== "undefined") window.open(url, "_blank");
+        return;
+      }
+      const safe = (title || "filled").replace(/[^a-z0-9_-]+/gi, "_");
+      const path = `${FileSystem.documentDirectory}${safe}_${Date.now()}.pdf`;
+      await FileSystem.writeAsStringAsync(path, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const ok = await Sharing.isAvailableAsync();
+      if (!ok) {
+        Alert.alert("Saved", `PDF saved to: ${path}`);
+        return;
+      }
+      await Sharing.shareAsync(path, { mimeType: "application/pdf", dialogTitle: title });
+    } catch (e: any) {
+      Alert.alert("Share failed", e.response?.data?.detail || String(e?.message || e));
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
@@ -148,7 +197,7 @@ export default function FormsScreen() {
         }
       >
         {tab === "templates" &&
-          (templates.length === 0 ? (
+          (templates.length === 0 && pdfTemplates.length === 0 ? (
             <View style={styles.empty}>
               <Feather name="file-plus" size={28} color={colors.textMuted} />
               <Text style={[typography.body, { textAlign: "center", marginTop: 10 }]}>
@@ -156,28 +205,55 @@ export default function FormsScreen() {
               </Text>
             </View>
           ) : (
-            templates.map((t) => (
-              <TouchableOpacity
-                key={t.id}
-                style={styles.card}
-                onPress={() => startFill(t)}
-                testID={`template-${t.id}`}
-              >
-                <View style={[styles.iconWrap, { backgroundColor: colors.brandSoft }]}>
-                  <Feather name="edit-3" size={18} color={colors.brand} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.cardTitle}>{t.title}</Text>
-                  {t.description ? <Text style={typography.small}>{t.description}</Text> : null}
-                  <Text style={[typography.small, { marginTop: 4 }]}>
-                    {t.kind === "checklist"
-                      ? `${(t.checklist_items || []).length} items · target ${t.target_percent || 100}%`
-                      : `${t.fields?.length || 0} fields`}
-                  </Text>
-                </View>
-                <Feather name="chevron-right" size={18} color={colors.textMuted} />
-              </TouchableOpacity>
-            ))
+            <>
+              {templates.map((t) => (
+                <TouchableOpacity
+                  key={t.id}
+                  style={styles.card}
+                  onPress={() => startFill(t)}
+                  testID={`template-${t.id}`}
+                >
+                  <View style={[styles.iconWrap, { backgroundColor: colors.brandSoft }]}>
+                    <Feather name="edit-3" size={18} color={colors.brand} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle}>{t.title}</Text>
+                    {t.description ? <Text style={typography.small}>{t.description}</Text> : null}
+                    <Text style={[typography.small, { marginTop: 4 }]}>
+                      {t.kind === "checklist"
+                        ? `${(t.checklist_items || []).length} items · target ${t.target_percent || 100}%`
+                        : `${t.fields?.length || 0} fields`}
+                    </Text>
+                  </View>
+                  <Feather name="chevron-right" size={18} color={colors.textMuted} />
+                </TouchableOpacity>
+              ))}
+              {pdfTemplates.length > 0 ? (
+                <Text style={[typography.label, { marginTop: 12 }]}>PDF Fillable Forms</Text>
+              ) : null}
+              {pdfTemplates.map((t) => (
+                <TouchableOpacity
+                  key={t.id}
+                  style={styles.card}
+                  onPress={() => setActivePdfId(t.id)}
+                  testID={`pdf-template-${t.id}`}
+                >
+                  <View style={[styles.iconWrap, { backgroundColor: "#FEE2E2" }]}>
+                    <Feather name="file-text" size={18} color="#B91C1C" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle}>{t.title}</Text>
+                    {t.description ? <Text style={typography.small}>{t.description}</Text> : null}
+                    <Text style={[typography.small, { marginTop: 4 }]}>
+                      {t.has_acroform
+                        ? `${t.field_count} AcroForm fields`
+                        : "No fillable fields detected"}
+                    </Text>
+                  </View>
+                  <Feather name="chevron-right" size={18} color={colors.textMuted} />
+                </TouchableOpacity>
+              ))}
+            </>
           ))}
 
         {tab === "submissions" &&
@@ -192,16 +268,34 @@ export default function FormsScreen() {
             submissions.map((s) => (
               <View key={s.id} style={styles.card}>
                 <View style={[styles.iconWrap, { backgroundColor: colors.surface }]}>
-                  <Feather name="check-circle" size={18} color={colors.success} />
+                  <Feather
+                    name={s._kind === "pdf" ? "file-text" : "check-circle"}
+                    size={18}
+                    color={s._kind === "pdf" ? "#B91C1C" : colors.success}
+                  />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardTitle}>{s.template_title}</Text>
                   <Text style={typography.small}>{new Date(s.created_at).toLocaleString()}</Text>
+                  {s._kind === "pdf" ? (
+                    <Text style={[typography.small, { marginTop: 2, color: colors.textMuted }]}>PDF · filled</Text>
+                  ) : null}
                 </View>
-                <TouchableOpacity onPress={() => summarize(s)} style={styles.aiBtn} testID={`ai-${s.id}`}>
-                  <Feather name="zap" size={14} color="#fff" />
-                  <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 4 }}>AI</Text>
-                </TouchableOpacity>
+                {s._kind === "pdf" ? (
+                  <TouchableOpacity
+                    onPress={() => sharePdfSubmission(s.id, s.template_title)}
+                    style={[styles.aiBtn, { backgroundColor: colors.primary }]}
+                    testID={`share-${s.id}`}
+                  >
+                    <Feather name="share-2" size={14} color="#fff" />
+                    <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 4 }}>PDF</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity onPress={() => summarize(s)} style={styles.aiBtn} testID={`ai-${s.id}`}>
+                    <Feather name="zap" size={14} color="#fff" />
+                    <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 4 }}>AI</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             ))
           ))}
@@ -394,6 +488,14 @@ export default function FormsScreen() {
           </View>
         </View>
       </Modal>
+      {/* PDF Fill modal */}
+      <PdfFormFillModal
+        templateId={activePdfId}
+        onClose={async () => {
+          setActivePdfId(null);
+          await load();
+        }}
+      />
     </SafeAreaView>
   );
 }

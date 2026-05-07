@@ -151,6 +151,20 @@ backend:
         - working: true
           agent: "testing"
           comment: "POST /api/customers/{cid}/notes accepted both pinned=false (created first) and pinned=true (created later). GET /api/customers/{cid}/notes returned pinned note as first element confirming pinned-first ordering via Mongo sort([('pinned', -1), ('created_at', -1)]). Staff can read and create notes (endpoint requires auth only, not admin), as designed."
+  - task: "PDF Fillable Forms (AcroForm parse + fill)"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Added pypdf-based extraction (_extract_pdf_fields) and fill (_fill_pdf). Endpoints: POST /pdf-forms/templates (admin upload base64 PDF, returns has_acroform + field_count), GET /pdf-forms/templates, GET /pdf-forms/templates/{id} (returns full PDF base64), DELETE /pdf-forms/templates/{id}, POST /pdf-forms/templates/{id}/fill (writes filled PDF, optional flatten), GET /pdf-forms/submissions (admin sees all, staff sees own), GET /pdf-forms/submissions/{id} (returns filled_pdf_base64). Stored in pdf_form_templates and pdf_form_submissions collections. Smoke-tested locally with reportlab-generated AcroForm PDF — text/checkbox/choice fields detected and filled, output PDF contains expected /V values."
+        - working: false
+          agent: "testing"
+          comment: "Ran /app/pdf_forms_test.py against public proxy URL. 11/12 cases passed: (1) admin upload returns has_acroform=true, field_count=3, no pdf_base64 leak ✅; (2) listing has new template, no pdf_base64 ✅; (3) detail returns pdf_base64 + fields with types {text, checkbox, select} and options=['Engineering','Operations','HR','Finance'] ✅; (4) staff fill flatten=false succeeds and re-parsed PDF /V values match: full_name='John Doe', accept='/Yes', dept='Engineering' ✅; (6) staff submissions scoped to own, no filled_pdf_base64 in list ✅; (7) admin submissions list returns all 2 submissions ✅; (8) GET single submission returns filled_pdf_base64 decoding to %PDF ✅; (9) staff GET admin's submission → 403 ✅; (10) staff POST template → 403 ✅; (11) admin DELETE template returns 200, GET returns 404, submissions cascade-deleted ✅; (12) staff DELETE → 403 ✅. CRITICAL FAILURE on (5) POST fill flatten=true: backend returns 500 with detail \"Fill failed: Incorrect first char in NameObject, should start with '/': (1) is deprecated and was removed in pypdf 5.0.0.\" Root cause: in /app/backend/server.py _fill_pdf, the read-only flatten code does `obj.update({NameObject(\"/Ff\"): NameObject(str(1 << 0))})` which constructs NameObject(\"1\") — pypdf 6.x rejects NameObjects without a leading '/'. Fix: use NumberObject (from pypdf.generic) for the /Ff flag value, e.g. `obj.update({NameObject(\"/Ff\"): NumberObject(1)})`. The non-flatten path works correctly, so the bug only affects flatten=true requests."
 
 frontend:
   - task: "Schedule shift card shows linked customer + pinned notes"
@@ -164,15 +178,27 @@ frontend:
         - working: "NA"
           agent: "main"
           comment: "Wired customer_name, site_name, pinned notes preview, and View Customer CTA on each shift card. User to verify."
+  - task: "PDF Fillable Forms UI (admin upload + staff fill + share)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin.tsx, /app/frontend/app/(tabs)/forms.tsx, /app/frontend/src/components/PdfFormFillModal.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Admin: new 'PDF' tab with DocumentPicker upload, base64 read via FileSystem (web fallback uses ArrayBuffer→btoa). Staff: forms tab now lists PDF templates, opens PdfFormFillModal that renders detected fields as text/switch/chip inputs, submits to /pdf-forms/templates/{id}/fill, shows download/share button using expo-sharing. Submissions list now merges checklists + PDFs."
 
 metadata:
   created_by: "main_agent"
-  version: "1.0"
-  test_sequence: 1
+  version: "1.1"
+  test_sequence: 2
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "PDF Fillable Forms (AcroForm parse + fill)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -182,3 +208,7 @@ agent_communication:
       message: "Finished schedule.tsx UI for linked customer + pinned notes on staff shift card. Please run backend regression on Holidays, Shifts (with customer/site fields), and Customer Notes."
     - agent: "testing"
       message: "Backend regression complete via /app/backend_test.py against the public proxy URL. 25/25 tests passed across smoke (login admin/staff, /auth/me, /clock/status, /notifications), Holidays (balance baseline + pending delta + approve/reject + final math + admin-only decision), Shifts with customer/site auto-populated names (POST + staff GET persists customer_name/site_name), and Customer Notes (pinned-first ordering with pinned note created after non-pinned still returned first). No critical issues found. All three high/medium priority tasks now marked working: true."
+    - agent: "main"
+      message: "Implemented True PDF Fillable Forms. Backend uses pypdf 6.x to extract AcroForm fields (text/checkbox/radio/select with options), fill values into fields and (optionally) lock them as read-only. Endpoints: /api/pdf-forms/templates (CRUD), /api/pdf-forms/templates/{id}/fill, /api/pdf-forms/submissions(/{id}). Please run focused tests: 1) admin uploads a base64 PDF (build a tiny one in the test using reportlab.pdfgen with form.textfield + form.checkbox + form.choice — or use an in-memory fixture), 2) GET listing returns has_acroform + field_count, 3) POST fill with values returns filled_pdf_base64 that decodes to a valid PDF whose fields contain the new values (verify by re-parsing with pypdf), 4) staff can list/get only own submissions, admin sees all, 5) DELETE removes template and its submissions. Use /app/memory/test_credentials.md."
+    - agent: "testing"
+      message: "PDF Fillable Forms: 11/12 tests passed via /app/pdf_forms_test.py. CRITICAL BUG in flatten=true path of _fill_pdf (server.py): line `obj.update({NameObject(\"/Ff\"): NameObject(str(1 << 0))})` produces a NameObject(\"1\") which pypdf 6.x rejects (NameObject must start with '/'). Returns 500 'Incorrect first char in NameObject'. Fix: replace with `NumberObject(1)` (import NumberObject from pypdf.generic) since /Ff is a numeric flag, not a name. flatten=false works perfectly — text='John Doe', checkbox /V='/Yes', select 'Engineering' all verified by re-parsing the returned PDF. All other endpoints (CRUD, role scoping, cascade delete) behave as expected; pdf_base64 is correctly omitted from list payloads and filled_pdf_base64 omitted from submission lists; admin sees all submissions, staff sees only own, cross-user GET returns 403, staff POST/DELETE on templates returns 403."

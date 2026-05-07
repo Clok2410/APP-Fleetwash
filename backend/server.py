@@ -233,6 +233,17 @@ class CustomerNoteIn(BaseModel):
     pinned: bool = False
 
 
+class PdfFormTemplateIn(BaseModel):
+    title: str
+    description: Optional[str] = None
+    pdf_base64: str  # full PDF as base64
+
+
+class PdfFormSubmissionIn(BaseModel):
+    values: Dict[str, Any]
+    flatten: bool = True  # flatten fields into static text after filling
+
+
 # ----------------- App init -----------------
 app = FastAPI(title="StaffHub API")
 api = APIRouter(prefix="/api")
@@ -1408,6 +1419,227 @@ async def delete_customer_note(cid: str, nid: str, current=Depends(get_current_u
         raise HTTPException(status_code=403, detail="Not allowed")
     await db.customer_notes.delete_one({"id": nid})
     return {"ok": True}
+
+
+# ----------------- PDF Fillable Forms -----------------
+def _extract_pdf_fields(pdf_bytes: bytes) -> List[Dict[str, Any]]:
+    """Parse AcroForm fields out of a PDF using pypdf. Returns a list of field dicts."""
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        return []
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        raw_fields = reader.get_fields() or {}
+    except Exception:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for name, f in raw_fields.items():
+        try:
+            ft = (f.get("/FT") or "").strip() if isinstance(f, dict) else (f.field_type or "")
+            value = f.get("/V") if isinstance(f, dict) else f.value
+            opts = f.get("/Opt") if isinstance(f, dict) else getattr(f, "options", None)
+            flags = f.get("/Ff", 0) if isinstance(f, dict) else 0
+            kind = "text"
+            options: Optional[List[str]] = None
+            if ft == "/Tx":
+                kind = "text"
+            elif ft == "/Btn":
+                # bit 16 (0x10000) = pushbutton, bit 15 (0x8000) = radio
+                if isinstance(flags, int) and flags & (1 << 15):
+                    kind = "radio"
+                else:
+                    kind = "checkbox"
+            elif ft == "/Ch":
+                kind = "select"
+            if opts:
+                # opts is sometimes list of strings, sometimes [export, label] pairs
+                clean: List[str] = []
+                for o in opts:
+                    if isinstance(o, list) and len(o) >= 2:
+                        clean.append(str(o[1]))
+                    else:
+                        clean.append(str(o))
+                options = clean
+            out.append({
+                "name": str(name),
+                "type": kind,
+                "value": "" if value is None else (str(value) if not isinstance(value, str) else value),
+                "options": options,
+            })
+        except Exception:
+            continue
+    return out
+
+
+def _fill_pdf(pdf_bytes: bytes, values: Dict[str, Any], flatten: bool = True) -> bytes:
+    """Fill AcroForm fields in PDF and return new PDF bytes. If flatten, mark read-only."""
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import NameObject, BooleanObject, TextStringObject
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter(clone_from=reader)
+
+    # Make sure /AcroForm has /NeedAppearances so viewers regenerate field UI
+    try:
+        if "/AcroForm" in writer._root_object:
+            writer._root_object["/AcroForm"].update(
+                {NameObject("/NeedAppearances"): BooleanObject(True)}
+            )
+    except Exception:
+        pass
+
+    # Coerce values: bool -> /Yes or /Off for checkboxes; everything else string
+    coerced: Dict[str, Any] = {}
+    for k, v in values.items():
+        if isinstance(v, bool):
+            coerced[k] = "/Yes" if v else "/Off"
+        elif v is None:
+            coerced[k] = ""
+        else:
+            coerced[k] = str(v)
+
+    for page in writer.pages:
+        try:
+            writer.update_page_form_field_values(page, coerced)
+        except Exception:
+            # ignore field errors per page
+            pass
+
+    if flatten:
+        # Best-effort flatten — mark fields read-only
+        try:
+            for page in writer.pages:
+                if "/Annots" in page:
+                    for annot in page["/Annots"]:
+                        try:
+                            obj = annot.get_object()
+                            if obj.get("/Subtype") == "/Widget":
+                                obj.update({NameObject("/Ff"): NameObject(str(1 << 0))})  # ReadOnly
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+@api.post("/pdf-forms/templates")
+async def create_pdf_form_template(body: PdfFormTemplateIn, _=Depends(require_admin), current=Depends(get_current_user)):
+    import base64
+    try:
+        pdf_bytes = base64.b64decode(body.pdf_base64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 PDF")
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Not a valid PDF file")
+
+    fields = _extract_pdf_fields(pdf_bytes)
+    tmpl = {
+        "id": str(uuid.uuid4()),
+        "title": body.title,
+        "description": body.description or "",
+        "pdf_base64": body.pdf_base64,
+        "fields": fields,
+        "has_acroform": len(fields) > 0,
+        "field_count": len(fields),
+        "size_bytes": len(pdf_bytes),
+        "created_by": current["id"],
+        "created_by_name": current.get("name"),
+        "created_at": now_utc(),
+    }
+    await db.pdf_form_templates.insert_one(tmpl)
+    res = serialize(tmpl).copy()
+    res.pop("pdf_base64", None)
+    return res
+
+
+@api.get("/pdf-forms/templates")
+async def list_pdf_form_templates(_=Depends(get_current_user)):
+    docs = await db.pdf_form_templates.find().sort("created_at", -1).to_list(500)
+    out = []
+    for d in docs:
+        s = serialize(d)
+        s.pop("pdf_base64", None)  # keep listing light
+        out.append(s)
+    return out
+
+
+@api.get("/pdf-forms/templates/{tid}")
+async def get_pdf_form_template(tid: str, _=Depends(get_current_user)):
+    doc = await db.pdf_form_templates.find_one({"id": tid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return serialize(doc)
+
+
+@api.delete("/pdf-forms/templates/{tid}")
+async def delete_pdf_form_template(tid: str, _=Depends(require_admin)):
+    res = await db.pdf_form_templates.delete_one({"id": tid})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Template not found")
+    await db.pdf_form_submissions.delete_many({"template_id": tid})
+    return {"ok": True}
+
+
+@api.post("/pdf-forms/templates/{tid}/fill")
+async def fill_pdf_form(tid: str, body: PdfFormSubmissionIn, current=Depends(get_current_user)):
+    import base64
+    tmpl = await db.pdf_form_templates.find_one({"id": tid})
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    try:
+        pdf_bytes = base64.b64decode(tmpl["pdf_base64"])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Stored PDF is corrupt")
+    try:
+        filled = _fill_pdf(pdf_bytes, body.values or {}, flatten=body.flatten)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fill failed: {e}")
+    sub = {
+        "id": str(uuid.uuid4()),
+        "template_id": tid,
+        "template_title": tmpl.get("title"),
+        "user_id": current["id"],
+        "user_name": current.get("name"),
+        "values": body.values or {},
+        "flattened": bool(body.flatten),
+        "filled_pdf_base64": base64.b64encode(filled).decode("utf-8"),
+        "size_bytes": len(filled),
+        "created_at": now_utc(),
+    }
+    await db.pdf_form_submissions.insert_one(sub)
+    res = serialize(sub).copy()
+    return res
+
+
+@api.get("/pdf-forms/submissions")
+async def list_pdf_form_submissions(template_id: Optional[str] = None, current=Depends(get_current_user)):
+    q: Dict[str, Any] = {}
+    if template_id:
+        q["template_id"] = template_id
+    if current.get("role") != "admin":
+        q["user_id"] = current["id"]
+    docs = await db.pdf_form_submissions.find(q).sort("created_at", -1).to_list(500)
+    out = []
+    for d in docs:
+        s = serialize(d)
+        s.pop("filled_pdf_base64", None)  # keep light
+        out.append(s)
+    return out
+
+
+@api.get("/pdf-forms/submissions/{sid}")
+async def get_pdf_form_submission(sid: str, current=Depends(get_current_user)):
+    doc = await db.pdf_form_submissions.find_one({"id": sid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if current.get("role") != "admin" and doc.get("user_id") != current["id"]:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return serialize(doc)
 
 
 # ----------------- Startup -----------------

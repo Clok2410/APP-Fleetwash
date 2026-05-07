@@ -24,11 +24,17 @@ import CustomerModal from "../src/components/CustomerModal";
 export default function AdminScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "users" | "depots" | "offsite" | "customers">("holidays");
+  const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "pdf-forms" | "users" | "depots" | "offsite" | "customers">("holidays");
   const [holidays, setHolidays] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [allShifts, setAllShifts] = useState<any[]>([]);
   const [allTemplates, setAllTemplates] = useState<any[]>([]);
+  const [pdfTemplates, setPdfTemplates] = useState<any[]>([]);
+  const [pdfUploading, setPdfUploading] = useState(false);
+  const [pdfTitle, setPdfTitle] = useState("");
+  const [pdfDesc, setPdfDesc] = useState("");
+  const [pdfPicked, setPdfPicked] = useState<{ name: string; base64: string } | null>(null);
+  const [pdfModalOpen, setPdfModalOpen] = useState(false);
   const [depots, setDepots] = useState<any[]>([]);
   const [offsite, setOffsite] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -74,7 +80,7 @@ export default function AdminScreen() {
       if (offUser) offsiteParams.user_id = offUser;
       if (offFrom) offsiteParams.date_from = offFrom;
       if (offTo) offsiteParams.date_to = offTo;
-      const [h, u, s, t, d, o, cust] = await Promise.all([
+      const [h, u, s, t, d, o, cust, pft] = await Promise.all([
         api.get("/holidays/requests", { params: { all: true } }),
         api.get("/users"),
         api.get("/shifts", { params: { all: true } }),
@@ -82,6 +88,7 @@ export default function AdminScreen() {
         api.get("/depots"),
         api.get("/admin/off-site-clock-ins", { params: offsiteParams }).catch(() => ({ data: [] })),
         api.get("/customers").catch(() => ({ data: [] })),
+        api.get("/pdf-forms/templates").catch(() => ({ data: [] })),
       ]);
       setHolidays(h.data);
       setUsers(u.data);
@@ -90,6 +97,7 @@ export default function AdminScreen() {
       setDepots(d.data);
       setOffsite(o.data || []);
       setCustomers(cust.data || []);
+      setPdfTemplates(pft.data || []);
     } catch {}
   }, [offDepot, offUser, offFrom, offTo]);
 
@@ -185,6 +193,66 @@ export default function AdminScreen() {
     }
   };
 
+  const pickPdf = async () => {
+    try {
+      const DocumentPicker = await import("expo-document-picker");
+      const FileSystem = await import("expo-file-system");
+      const res = await DocumentPicker.getDocumentAsync({
+        type: "application/pdf",
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (res.canceled || !res.assets || res.assets.length === 0) return;
+      const file = res.assets[0];
+      let base64 = (file as any).base64 || "";
+      if (!base64) {
+        if (Platform.OS === "web" && (file as any).file) {
+          const f: File = (file as any).file;
+          const ab = await f.arrayBuffer();
+          let binary = "";
+          const bytes = new Uint8Array(ab);
+          for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+          base64 = btoa(binary);
+        } else {
+          base64 = await FileSystem.readAsStringAsync(file.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+        }
+      }
+      setPdfPicked({ name: file.name || "form.pdf", base64 });
+      if (!pdfTitle) setPdfTitle((file.name || "form.pdf").replace(/\.pdf$/i, ""));
+    } catch (e: any) {
+      Alert.alert("Pick failed", String(e?.message || e));
+    }
+  };
+
+  const uploadPdfTemplate = async () => {
+    if (!pdfPicked) return Alert.alert("Pick a PDF first");
+    if (!pdfTitle) return Alert.alert("Title required");
+    setPdfUploading(true);
+    try {
+      const { data } = await api.post("/pdf-forms/templates", {
+        title: pdfTitle,
+        description: pdfDesc,
+        pdf_base64: pdfPicked.base64,
+      });
+      setPdfModalOpen(false);
+      setPdfPicked(null);
+      setPdfTitle("");
+      setPdfDesc("");
+      await load();
+      if (data.has_acroform) {
+        Alert.alert("Uploaded", `Detected ${data.field_count} fillable fields.`);
+      } else {
+        Alert.alert("Uploaded", "No AcroForm fields were detected. Staff can still view it but not fill it.");
+      }
+    } catch (e: any) {
+      Alert.alert("Upload failed", e.response?.data?.detail || "Try again");
+    } finally {
+      setPdfUploading(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
@@ -195,7 +263,7 @@ export default function AdminScreen() {
       </View>
 
       <View style={styles.tabs}>
-        {(["holidays", "shifts", "forms", "users", "depots", "offsite", "customers"] as const).map((t) => (
+        {(["holidays", "shifts", "forms", "pdf-forms", "users", "depots", "offsite", "customers"] as const).map((t) => (
           <TouchableOpacity
             key={t}
             testID={`admin-tab-${t}`}
@@ -203,7 +271,11 @@ export default function AdminScreen() {
             style={[styles.tab, tab === t && styles.tabActive]}
           >
             <Text style={[styles.tabText, tab === t && styles.tabTextActive]}>
-              {t === "offsite" ? `off-site${offsite.length ? ` · ${offsite.length}` : ""}` : t}
+              {t === "offsite"
+                ? `off-site${offsite.length ? ` · ${offsite.length}` : ""}`
+                : t === "pdf-forms"
+                ? "PDF"
+                : t}
             </Text>
           </TouchableOpacity>
         ))}
@@ -289,6 +361,60 @@ export default function AdminScreen() {
                 </TouchableOpacity>
               </View>
             ))}
+          </>
+        )}
+
+        {tab === "pdf-forms" && (
+          <>
+            <TouchableOpacity
+              testID="open-pdf-upload"
+              style={styles.addCta}
+              onPress={() => setPdfModalOpen(true)}
+            >
+              <Feather name="upload" size={16} color="#fff" />
+              <Text style={styles.addCtaText}>Upload PDF Template</Text>
+            </TouchableOpacity>
+            <Text style={[typography.small, { marginTop: 8, marginBottom: 4 }]}>
+              Upload PDFs with AcroForm (fillable) fields. Staff can fill them on mobile and share the completed PDF.
+            </Text>
+            {pdfTemplates.length === 0 ? (
+              <Text style={[typography.small, { marginTop: 12, color: colors.textMuted }]}>
+                No PDF templates yet.
+              </Text>
+            ) : (
+              pdfTemplates.map((t) => (
+                <View key={t.id} style={styles.card} testID={`pdf-tpl-${t.id}`}>
+                  <View style={[styles.smBtn, { backgroundColor: t.has_acroform ? "#FEE2E2" : colors.surface, width: 36, height: 36, borderRadius: 18 }]}>
+                    <Feather name="file-text" size={16} color={t.has_acroform ? "#B91C1C" : colors.textMuted} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontWeight: "700", color: colors.primary }}>{t.title}</Text>
+                    <Text style={typography.small}>
+                      {t.has_acroform
+                        ? `${t.field_count} fields · ${formatBytesAdmin(t.size_bytes || 0)}`
+                        : "No AcroForm fields detected"}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={async () => {
+                      Alert.alert("Delete?", `Delete ${t.title}?`, [
+                        { text: "Cancel", style: "cancel" },
+                        {
+                          text: "Delete",
+                          style: "destructive",
+                          onPress: async () => {
+                            await api.delete(`/pdf-forms/templates/${t.id}`);
+                            await load();
+                          },
+                        },
+                      ]);
+                    }}
+                  >
+                    <Feather name="trash-2" size={14} color={colors.alert} />
+                  </TouchableOpacity>
+                </View>
+              ))
+            )}
           </>
         )}
 
@@ -661,8 +787,76 @@ export default function AdminScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* PDF Upload Modal */}
+      <Modal visible={pdfModalOpen} animationType="slide" transparent onRequestClose={() => setPdfModalOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={typography.h3}>Upload PDF Form</Text>
+            <Text style={[typography.small, { marginTop: 4 }]}>
+              We'll auto-detect AcroForm (fillable) fields so staff can fill on mobile.
+            </Text>
+            <TextInput
+              testID="pdf-title-input"
+              style={styles.input}
+              placeholder="Title (e.g. Vehicle Inspection)"
+              value={pdfTitle}
+              onChangeText={setPdfTitle}
+              placeholderTextColor={colors.textMuted}
+            />
+            <TextInput
+              style={[styles.input, { height: 72, paddingTop: 10 }]}
+              placeholder="Description (optional)"
+              value={pdfDesc}
+              onChangeText={setPdfDesc}
+              multiline
+              placeholderTextColor={colors.textMuted}
+            />
+            <TouchableOpacity
+              testID="pick-pdf-btn"
+              onPress={pickPdf}
+              style={[styles.input, { flexDirection: "row", alignItems: "center", justifyContent: "center", marginTop: spacing.sm, height: 56 }]}
+            >
+              <Feather name={pdfPicked ? "check-circle" : "paperclip"} size={16} color={pdfPicked ? colors.success : colors.primary} />
+              <Text style={{ marginLeft: 8, color: colors.primary, fontWeight: "600" }} numberOfLines={1}>
+                {pdfPicked ? pdfPicked.name : "Pick PDF file"}
+              </Text>
+            </TouchableOpacity>
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: colors.surface }]}
+                onPress={() => {
+                  setPdfModalOpen(false);
+                  setPdfPicked(null);
+                  setPdfTitle("");
+                  setPdfDesc("");
+                }}
+              >
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="pdf-upload-submit"
+                style={[styles.modalBtn, { backgroundColor: colors.primary, opacity: pdfUploading ? 0.6 : 1 }]}
+                onPress={uploadPdfTemplate}
+                disabled={pdfUploading}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>
+                  {pdfUploading ? "Uploading…" : "Upload"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
+}
+
+function formatBytesAdmin(n: number) {
+  if (!n) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 const styles = StyleSheet.create({
