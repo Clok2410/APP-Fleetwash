@@ -16,6 +16,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { api } from "../../src/api";
 import { useAuth } from "../../src/auth";
 import { colors, spacing, radius, typography } from "../../src/theme";
+import CustomerModal from "../../src/components/CustomerModal";
 
 export default function ScheduleScreen() {
   const { user } = useAuth();
@@ -27,6 +28,8 @@ export default function ScheduleScreen() {
   const [users, setUsers] = useState<any[]>([]);
   const [swapTarget, setSwapTarget] = useState<string>("");
   const [swapReason, setSwapReason] = useState("");
+  const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
+  const [pinnedNotes, setPinnedNotes] = useState<Record<string, any[]>>({});
 
   const load = useCallback(async () => {
     try {
@@ -38,6 +41,18 @@ export default function ScheduleScreen() {
       setShifts(s.data);
       setSwaps(sw.data);
       setUsers(u.data.filter((x: any) => x.id !== user?.id && x.role === "staff"));
+      // Fetch pinned notes for each unique customer linked to a shift
+      const cIds = Array.from(new Set((s.data || []).map((x: any) => x.customer_id).filter(Boolean)));
+      const noteMap: Record<string, any[]> = {};
+      await Promise.all(
+        cIds.map(async (cid: any) => {
+          try {
+            const { data } = await api.get(`/customers/${cid}/notes`);
+            noteMap[cid] = (data || []).filter((n: any) => n.pinned);
+          } catch {}
+        })
+      );
+      setPinnedNotes(noteMap);
     } catch {}
   }, [user?.id]);
 
@@ -110,27 +125,66 @@ export default function ScheduleScreen() {
           (shifts.length === 0 ? (
             <Empty message="No upcoming shifts. Your admin will assign them here." icon="calendar" />
           ) : (
-            shifts.map((s) => (
-              <View key={s.id} style={styles.shiftCard} testID={`shift-${s.id}`}>
-                <View style={styles.shiftLeft}>
-                  <Text style={typography.label}>{s.start?.slice(0, 10)}</Text>
-                  <Text style={[typography.h3, { marginTop: 4 }]}>{s.title}</Text>
-                  <Text style={typography.small}>
-                    {s.start?.slice(11, 16)} – {s.end?.slice(11, 16)} · {s.location || "—"}
-                  </Text>
-                  {s.notes ? (
-                    <Text style={[typography.small, { marginTop: 4 }]}>{s.notes}</Text>
-                  ) : null}
+            shifts.map((s) => {
+              const notes = (s.customer_id && pinnedNotes[s.customer_id]) || [];
+              return (
+                <View key={s.id} style={styles.shiftCard} testID={`shift-${s.id}`}>
+                  <View style={styles.shiftLeft}>
+                    <Text style={typography.label}>{s.start?.slice(0, 10)}</Text>
+                    <Text style={[typography.h3, { marginTop: 4 }]}>{s.title}</Text>
+                    <Text style={typography.small}>
+                      {s.start?.slice(11, 16)} – {s.end?.slice(11, 16)} · {s.location || "—"}
+                    </Text>
+                    {s.customer_name ? (
+                      <View style={styles.customerRow}>
+                        <Feather name="briefcase" size={13} color={colors.primary} />
+                        <Text style={[typography.small, { marginLeft: 6, fontWeight: "600", color: colors.primary }]}>
+                          {s.customer_name}
+                          {s.site_name ? ` · ${s.site_name}` : ""}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {s.notes ? (
+                      <Text style={[typography.small, { marginTop: 4 }]}>{s.notes}</Text>
+                    ) : null}
+                    {notes.length > 0 ? (
+                      <View style={{ marginTop: 6 }}>
+                        {notes.slice(0, 2).map((n: any) => (
+                          <View key={n.id} style={styles.pinnedNote}>
+                            <Feather name="bookmark" size={12} color="#92400E" />
+                            <Text
+                              style={[typography.small, { marginLeft: 6, flex: 1, color: "#78350F" }]}
+                              numberOfLines={2}
+                            >
+                              {n.body || n.content}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
+                    {s.customer_id ? (
+                      <TouchableOpacity
+                        testID={`view-cust-${s.id}`}
+                        style={styles.viewCustBtn}
+                        onPress={() => setActiveCustomerId(s.customer_id)}
+                      >
+                        <Feather name="user" size={12} color="#fff" />
+                        <Text style={{ color: "#fff", fontWeight: "700", marginLeft: 6, fontSize: 12 }}>
+                          View Customer
+                        </Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                  <TouchableOpacity
+                    testID={`swap-${s.id}`}
+                    style={styles.swapBtn}
+                    onPress={() => setSwapModal({ shiftId: s.id })}
+                  >
+                    <Feather name="repeat" size={16} color={colors.primary} />
+                  </TouchableOpacity>
                 </View>
-                <TouchableOpacity
-                  testID={`swap-${s.id}`}
-                  style={styles.swapBtn}
-                  onPress={() => setSwapModal({ shiftId: s.id })}
-                >
-                  <Feather name="repeat" size={16} color={colors.primary} />
-                </TouchableOpacity>
-              </View>
-            ))
+              );
+            })
           ))}
 
         {tab === "swaps" &&
@@ -201,6 +255,7 @@ export default function ScheduleScreen() {
           </View>
         </View>
       </Modal>
+      <CustomerModal customerId={activeCustomerId} onClose={() => setActiveCustomerId(null)} />
     </SafeAreaView>
   );
 }
@@ -240,6 +295,29 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     alignItems: "center",
     justifyContent: "center",
+  },
+  customerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 6,
+  },
+  pinnedNote: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: "#FEF3C7",
+    borderRadius: radius.sm,
+    padding: 6,
+    marginTop: 4,
+  },
+  viewCustBtn: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.brand,
   },
   statusPill: {
     paddingHorizontal: 10,

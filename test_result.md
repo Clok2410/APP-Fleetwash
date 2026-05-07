@@ -101,3 +101,84 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: |
+  Build a Connect Teams-style staff app with: clock in/out, holiday tracker & requests,
+  job scheduler, shared drive (PDF fillable forms via Checklist builder), customer CRM
+  (profiles, sites, contacts, notes), geofenced clock-ins, weekly digest emails (mocked),
+  shift swap/availability, and admin dashboard.
+
+backend:
+  - task: "Holiday endpoints (balance, create, list, decision)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Endpoints exist; need verification of approve/reject flow + remaining balance math."
+        - working: true
+          agent: "testing"
+          comment: "Verified via /app/backend_test.py against public proxy URL. GET /holidays/balance returns {entitlement, used, pending, remaining} for staff. POST /holidays/requests creates pending (3-day request increased pending by 3, two requests by 6). GET /holidays/requests returns own for staff and ?all=true returns all for admin (staff with all=true is correctly scoped to their own). POST /holidays/requests/{id}/decision?decision=approved by admin correctly reduces pending and increases used by 3 days; rejected request decrements pending without touching used. Staff hitting decision endpoint returns 403. Final math validated: used+=3, pending+=0, remaining-=3 over the run."
+  - task: "Shifts with customer_id/site_id linking"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "POST /shifts now stores customer_id, customer_name, site_id, site_name. Verify response payload."
+        - working: true
+          agent: "testing"
+          comment: "Created customer 'Riverside Council', added site 'Riverside Depot - East', then POST /api/shifts with {user_id, title, start, end, customer_id, site_id} returned customer_name and site_name auto-populated from the customer/site documents. GET /api/shifts as staff returned the same shift with customer_name and site_name persisted. Admin auth required for POST verified."
+  - task: "Customer notes (pinned)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "GET /customers/{cid}/notes returns pinned-first order; verify auth and content."
+        - working: true
+          agent: "testing"
+          comment: "POST /api/customers/{cid}/notes accepted both pinned=false (created first) and pinned=true (created later). GET /api/customers/{cid}/notes returned pinned note as first element confirming pinned-first ordering via Mongo sort([('pinned', -1), ('created_at', -1)]). Staff can read and create notes (endpoint requires auth only, not admin), as designed."
+
+frontend:
+  - task: "Schedule shift card shows linked customer + pinned notes"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/schedule.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Wired customer_name, site_name, pinned notes preview, and View Customer CTA on each shift card. User to verify."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    - agent: "main"
+      message: "Finished schedule.tsx UI for linked customer + pinned notes on staff shift card. Please run backend regression on Holidays, Shifts (with customer/site fields), and Customer Notes."
+    - agent: "testing"
+      message: "Backend regression complete via /app/backend_test.py against the public proxy URL. 25/25 tests passed across smoke (login admin/staff, /auth/me, /clock/status, /notifications), Holidays (balance baseline + pending delta + approve/reject + final math + admin-only decision), Shifts with customer/site auto-populated names (POST + staff GET persists customer_name/site_name), and Customer Notes (pinned-first ordering with pinned note created after non-pinned still returned first). No critical issues found. All three high/medium priority tasks now marked working: true."

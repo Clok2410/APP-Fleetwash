@@ -55,6 +55,8 @@ export default function AdminScreen() {
   const [sStart, setSStart] = useState("");
   const [sEnd, setSEnd] = useState("");
   const [sLoc, setSLoc] = useState("");
+  const [sCustomerId, setSCustomerId] = useState("");
+  const [sSiteId, setSSiteId] = useState("");
 
   const [formModal, setFormModal] = useState(false);
   const [statsTpl, setStatsTpl] = useState<any>(null);
@@ -153,9 +155,18 @@ export default function AdminScreen() {
   const createShift = async () => {
     if (!sUser || !sTitle || !sStart || !sEnd) return Alert.alert("Missing info", "All fields required");
     try {
-      await api.post("/shifts", { user_id: sUser, title: sTitle, start: sStart, end: sEnd, location: sLoc });
+      await api.post("/shifts", {
+        user_id: sUser,
+        title: sTitle,
+        start: sStart,
+        end: sEnd,
+        location: sLoc,
+        customer_id: sCustomerId || undefined,
+        site_id: sSiteId || undefined,
+      });
       setShiftModal(false);
       setSUser(""); setSTitle(""); setSStart(""); setSEnd(""); setSLoc("");
+      setSCustomerId(""); setSSiteId("");
       await load();
     } catch (e: any) {
       Alert.alert("Error", e.response?.data?.detail || "Failed");
@@ -337,7 +348,15 @@ export default function AdminScreen() {
 
         {tab === "offsite" && (
           <>
-            <OffsiteMap entries={offsite} depots={depots} />
+            <OffsiteMap
+              entries={offsite}
+              depots={depots}
+              sites={customers.flatMap((c: any) =>
+                (c.sites || [])
+                  .filter((st: any) => st.lat != null && st.lng != null)
+                  .map((st: any) => ({ ...st, customer_name: c.name }))
+              )}
+            />
 
             <View style={{ marginBottom: 8, gap: 6 }}>
               <Text style={typography.label}>Filter by depot</Text>
@@ -494,7 +513,59 @@ export default function AdminScreen() {
             <TextInput style={styles.input} placeholder="Title" value={sTitle} onChangeText={setSTitle} placeholderTextColor={colors.textMuted} />
             <TextInput style={styles.input} placeholder="Start (YYYY-MM-DDTHH:MM)" value={sStart} onChangeText={setSStart} placeholderTextColor={colors.textMuted} />
             <TextInput style={styles.input} placeholder="End (YYYY-MM-DDTHH:MM)" value={sEnd} onChangeText={setSEnd} placeholderTextColor={colors.textMuted} />
-            <TextInput style={styles.input} placeholder="Location" value={sLoc} onChangeText={setSLoc} placeholderTextColor={colors.textMuted} />
+            <TextInput style={styles.input} placeholder="Location (free-text)" value={sLoc} onChangeText={setSLoc} placeholderTextColor={colors.textMuted} />
+
+            {customers.length > 0 && (
+              <>
+                <Text style={[typography.label, { marginTop: 8 }]}>Customer (optional)</Text>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+                  <TouchableOpacity
+                    testID="shift-cust-none"
+                    style={[styles.typeChip, !sCustomerId && { backgroundColor: colors.primary }]}
+                    onPress={() => { setSCustomerId(""); setSSiteId(""); }}
+                  >
+                    <Text style={{ color: !sCustomerId ? "#fff" : colors.primary, fontWeight: "600", fontSize: 12 }}>None</Text>
+                  </TouchableOpacity>
+                  {customers.map((c) => (
+                    <TouchableOpacity
+                      key={c.id}
+                      testID={`shift-cust-${c.id}`}
+                      style={[styles.typeChip, sCustomerId === c.id && { backgroundColor: colors.primary }]}
+                      onPress={() => { setSCustomerId(c.id); setSSiteId(""); }}
+                    >
+                      <Text style={{ color: sCustomerId === c.id ? "#fff" : colors.primary, fontWeight: "600", fontSize: 12 }}>
+                        {c.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                {sCustomerId && (() => {
+                  const cust = customers.find((c) => c.id === sCustomerId);
+                  const sites = cust?.sites || [];
+                  if (sites.length === 0)
+                    return <Text style={[typography.small, { marginTop: 6, color: colors.textMuted }]}>No sites for this customer.</Text>;
+                  return (
+                    <>
+                      <Text style={[typography.label, { marginTop: 8 }]}>Site</Text>
+                      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+                        {sites.map((st: any) => (
+                          <TouchableOpacity
+                            key={st.id}
+                            testID={`shift-site-${st.id}`}
+                            style={[styles.typeChip, sSiteId === st.id && { backgroundColor: colors.brand }]}
+                            onPress={() => setSSiteId(st.id)}
+                          >
+                            <Text style={{ color: sSiteId === st.id ? "#fff" : colors.primary, fontWeight: "600", fontSize: 12 }}>
+                              {st.name}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </>
+                  );
+                })()}
+              </>
+            )}
             <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
               <TouchableOpacity style={[styles.modalBtn, { backgroundColor: colors.surface }]} onPress={() => setShiftModal(false)}>
                 <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>

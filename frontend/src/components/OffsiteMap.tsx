@@ -11,9 +11,14 @@ type Entry = {
   distance_m?: number | null;
 };
 
-type Props = { entries: Entry[]; depots: { id: string; name: string; lat: number; lng: number; radius_m: number }[] };
+type Site = { id: string; name: string; lat: number; lng: number; radius_m?: number; customer_name?: string };
+type Props = {
+  entries: Entry[];
+  depots: { id: string; name: string; lat: number; lng: number; radius_m: number }[];
+  sites?: Site[];
+};
 
-export default function OffsiteMap({ entries, depots }: Props) {
+export default function OffsiteMap({ entries, depots, sites = [] }: Props) {
   if (Platform.OS === "web") {
     return (
       <View style={s.webFallback}>
@@ -24,7 +29,7 @@ export default function OffsiteMap({ entries, depots }: Props) {
         </Text>
         <Text style={[typography.small, { marginTop: 6, color: colors.textMuted }]}>
           {entries.length} pin{entries.length === 1 ? "" : "s"} · {depots.length} depot
-          {depots.length === 1 ? "" : "s"}
+          {depots.length === 1 ? "" : "s"} · {sites.length} customer site{sites.length === 1 ? "" : "s"}
         </Text>
       </View>
     );
@@ -59,6 +64,22 @@ export default function OffsiteMap({ entries, depots }: Props) {
               radius={d.radius_m}
               strokeColor="rgba(16,185,129,0.6)"
               fillColor="rgba(16,185,129,0.1)"
+            />
+          </React.Fragment>
+        ))}
+        {sites.map((st) => (
+          <React.Fragment key={st.id}>
+            <Marker
+              coordinate={{ latitude: st.lat, longitude: st.lng }}
+              title={st.name}
+              description={st.customer_name || `${st.radius_m || 200}m radius`}
+              pinColor="orange"
+            />
+            <Circle
+              center={{ latitude: st.lat, longitude: st.lng }}
+              radius={st.radius_m || 200}
+              strokeColor="rgba(245,158,11,0.6)"
+              fillColor="rgba(245,158,11,0.1)"
             />
           </React.Fragment>
         ))}
