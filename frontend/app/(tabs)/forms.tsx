@@ -51,18 +51,30 @@ export default function FormsScreen() {
   const startFill = (tpl: any) => {
     setActive(tpl);
     const init: Record<string, any> = {};
-    (tpl.fields || []).forEach((f: Field) => {
-      init[f.key] = f.type === "checkbox" ? false : "";
-    });
+    if (tpl.kind === "checklist") {
+      (tpl.checklist_items || []).forEach((it: any) => {
+        (it.sub_keys || []).forEach((sk: string) => {
+          init[`${it.id}_${sk}`] = false;
+        });
+      });
+      init["_date"] = new Date().toISOString().slice(0, 10);
+      init["_notes"] = "";
+    } else {
+      (tpl.fields || []).forEach((f: Field) => {
+        init[f.key] = f.type === "checkbox" ? false : "";
+      });
+    }
     setValues(init);
   };
 
   const submit = async () => {
     if (!active) return;
-    for (const f of active.fields as Field[]) {
-      if (f.required && (values[f.key] === "" || values[f.key] == null)) {
-        Alert.alert("Required", `Please complete: ${f.label}`);
-        return;
+    if (active.kind !== "checklist") {
+      for (const f of active.fields as Field[]) {
+        if (f.required && (values[f.key] === "" || values[f.key] == null)) {
+          Alert.alert("Required", `Please complete: ${f.label}`);
+          return;
+        }
       }
     }
     setSubmitting(true);
@@ -204,7 +216,86 @@ export default function FormsScreen() {
             {active?.description ? (
               <Text style={[typography.body, { marginBottom: spacing.md }]}>{active.description}</Text>
             ) : null}
-            {(active?.fields || []).map((f: Field) => (
+
+            {active?.kind === "checklist" ? (
+              <>
+                <Text style={typography.label}>Date</Text>
+                <TextInput
+                  testID="checklist-date"
+                  style={styles.fieldInput}
+                  value={String(values["_date"] ?? "")}
+                  onChangeText={(v) => setValues({ ...values, _date: v })}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={colors.textMuted}
+                />
+                <View style={{ marginTop: 16, borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+                  <View style={{ flexDirection: "row", backgroundColor: colors.surface, padding: 10 }}>
+                    <Text style={{ flex: 1, fontWeight: "700", fontSize: 12, color: colors.textSecondary }}>ITEM</Text>
+                    {(active.checklist_items?.[0]?.sub_keys || []).map((sk: string) => (
+                      <Text key={sk} style={{ width: 64, textAlign: "center", fontWeight: "700", fontSize: 12, color: colors.textSecondary }}>
+                        {sk}
+                      </Text>
+                    ))}
+                  </View>
+                  {(active.checklist_items || []).map((it: any, i: number) => (
+                    <View
+                      key={it.id}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        padding: 10,
+                        backgroundColor: i % 2 === 0 ? "#fff" : colors.surface,
+                      }}
+                    >
+                      <Text style={{ flex: 1, fontWeight: "600", color: colors.primary }}>{it.label}</Text>
+                      {it.sub_keys.map((sk: string) => {
+                        const k = `${it.id}_${sk}`;
+                        const v = !!values[k];
+                        return (
+                          <TouchableOpacity
+                            key={sk}
+                            testID={`cb-${k}`}
+                            onPress={() => setValues({ ...values, [k]: !v })}
+                            style={{
+                              width: 64,
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
+                            activeOpacity={0.7}
+                          >
+                            <View
+                              style={{
+                                width: 28,
+                                height: 28,
+                                borderRadius: 6,
+                                borderWidth: 2,
+                                borderColor: v ? colors.success : colors.border,
+                                backgroundColor: v ? colors.success : "#fff",
+                                alignItems: "center",
+                                justifyContent: "center",
+                              }}
+                            >
+                              {v && <Feather name="check" size={18} color="#fff" />}
+                            </View>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  ))}
+                </View>
+                <Text style={[typography.label, { marginTop: 16 }]}>Notes</Text>
+                <TextInput
+                  testID="checklist-notes"
+                  style={[styles.fieldInput, { height: 100, textAlignVertical: "top" }]}
+                  multiline
+                  value={String(values["_notes"] ?? "")}
+                  onChangeText={(v) => setValues({ ...values, _notes: v })}
+                  placeholder="Any exceptions, missed items, or comments…"
+                  placeholderTextColor={colors.textMuted}
+                />
+              </>
+            ) : (
+              (active?.fields || []).map((f: Field) => (
               <View key={f.key} style={{ marginBottom: spacing.md }}>
                 <Text style={typography.label}>
                   {f.label} {f.required && <Text style={{ color: colors.alert }}>*</Text>}
@@ -253,7 +344,8 @@ export default function FormsScreen() {
                   />
                 )}
               </View>
-            ))}
+              ))
+            )}
             <TouchableOpacity
               testID="submit-form"
               style={styles.submitBtn}

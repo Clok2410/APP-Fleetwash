@@ -164,10 +164,19 @@ class FormFieldIn(BaseModel):
     options: Optional[List[str]] = None
 
 
+class ChecklistItemIn(BaseModel):
+    id: str  # e.g. "HL29"
+    label: str  # e.g. "HL 29"
+    sub_keys: List[str]  # e.g. ["EXT", "INT"]
+
+
 class FormTemplateIn(BaseModel):
     title: str
     description: Optional[str] = None
-    fields: List[FormFieldIn]
+    fields: List[FormFieldIn] = []
+    kind: str = "form"  # "form" | "checklist"
+    checklist_items: Optional[List[ChecklistItemIn]] = None
+    target_percent: Optional[float] = None  # e.g. 100.0 means all items must be done
 
 
 class FormSubmissionIn(BaseModel):
@@ -535,12 +544,68 @@ async def create_template(body: FormTemplateIn, current=Depends(require_admin)):
         "title": body.title,
         "description": body.description,
         "fields": [f.dict() for f in body.fields],
+        "kind": body.kind,
+        "checklist_items": [c.dict() for c in (body.checklist_items or [])],
+        "target_percent": body.target_percent,
         "created_by": current["id"],
         "created_by_name": current["name"],
         "created_at": now_utc(),
     }
     await db.form_templates.insert_one(tpl)
     return serialize(tpl)
+
+
+@api.get("/forms/templates/{tid}/stats")
+async def template_stats(tid: str, date_from: Optional[str] = None, date_to: Optional[str] = None, _=Depends(get_current_user)):
+    tpl = await db.form_templates.find_one({"id": tid})
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    q: Dict[str, Any] = {"template_id": tid}
+    if date_from or date_to:
+        rng: Dict[str, Any] = {}
+        if date_from:
+            rng["$gte"] = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+        if date_to:
+            rng["$lte"] = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc) + timedelta(days=1)
+        q["created_at"] = rng
+    subs = await db.form_submissions.find(q).to_list(2000)
+    items = tpl.get("checklist_items") or []
+    # Per-item per-subkey counts
+    per_item: Dict[str, Dict[str, int]] = {}
+    total_done = 0
+    total_possible = 0
+    for it in items:
+        per_item[it["id"]] = {sk: 0 for sk in it["sub_keys"]}
+    for s in subs:
+        vals = s.get("values") or {}
+        for it in items:
+            for sk in it["sub_keys"]:
+                total_possible += 1
+                key = f"{it['id']}_{sk}"
+                if vals.get(key) is True or str(vals.get(key, "")).lower() == "true":
+                    per_item[it["id"]][sk] += 1
+                    total_done += 1
+    overall_pct = (total_done / total_possible * 100.0) if total_possible else 0.0
+    target = tpl.get("target_percent")
+    return {
+        "template_id": tid,
+        "title": tpl.get("title"),
+        "submissions": len(subs),
+        "items": [
+            {
+                "id": it["id"],
+                "label": it["label"],
+                "sub_keys": it["sub_keys"],
+                "counts": per_item[it["id"]],
+            }
+            for it in items
+        ],
+        "overall_done": total_done,
+        "overall_possible": total_possible,
+        "overall_percent": round(overall_pct, 1),
+        "target_percent": target,
+        "on_target": (target is None) or (overall_pct >= target),
+    }
 
 
 @api.get("/forms/templates")

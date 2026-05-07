@@ -35,6 +35,19 @@ export default function AdminScreen() {
   const [fields, setFields] = useState<any[]>([
     { key: "name", label: "Full Name", type: "text", required: true },
   ]);
+  const [fKind, setFKind] = useState<"form" | "checklist">("form");
+  const [fTarget, setFTarget] = useState("100");
+  const [subKeysInput, setSubKeysInput] = useState("EXT,INT");
+  const [items, setItems] = useState<any[]>([
+    { id: "HL29", label: "HL 29", sub_keys: ["EXT", "INT"] },
+    { id: "HL30", label: "HL 30", sub_keys: ["EXT", "INT"] },
+  ]);
+  const [bulkInput, setBulkInput] = useState("");
+  const [allTemplates, setAllTemplates] = useState<any[]>([]);
+  const [statsTpl, setStatsTpl] = useState<any>(null);
+  const [stats, setStats] = useState<any>(null);
+  const [statsBusy, setStatsBusy] = useState(false);
+  const [statsRange, setStatsRange] = useState<"day" | "week" | "month" | "all">("month");
 
   const [userModal, setUserModal] = useState(false);
   const [uEmail, setUEmail] = useState("");
@@ -44,16 +57,44 @@ export default function AdminScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [h, u, s] = await Promise.all([
+      const [h, u, s, t] = await Promise.all([
         api.get("/holidays/requests", { params: { all: true } }),
         api.get("/users"),
         api.get("/shifts", { params: { all: true } }),
+        api.get("/forms/templates"),
       ]);
       setHolidays(h.data);
       setUsers(u.data);
       setAllShifts(s.data);
+      setAllTemplates(t.data);
     } catch {}
   }, []);
+
+  const openStats = async (tpl: any, range: "day" | "week" | "month" | "all" = "month") => {
+    setStatsTpl(tpl);
+    setStatsRange(range);
+    setStats(null);
+    setStatsBusy(true);
+    try {
+      const params: any = {};
+      const now = new Date();
+      if (range === "day") {
+        params.date_from = now.toISOString().slice(0, 10);
+      } else if (range === "week") {
+        const from = new Date(now); from.setDate(from.getDate() - 7);
+        params.date_from = from.toISOString().slice(0, 10);
+      } else if (range === "month") {
+        const from = new Date(now); from.setMonth(from.getMonth() - 1);
+        params.date_from = from.toISOString().slice(0, 10);
+      }
+      const { data } = await api.get(`/forms/templates/${tpl.id}/stats`, { params });
+      setStats(data);
+    } catch (e: any) {
+      Alert.alert("Stats failed", e.response?.data?.detail || "Failed");
+    } finally {
+      setStatsBusy(false);
+    }
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -88,25 +129,64 @@ export default function AdminScreen() {
   };
 
   const createForm = async () => {
-    if (!fTitle || fields.length === 0) {
-      Alert.alert("Missing info", "Title and at least one field required");
+    if (!fTitle) {
+      Alert.alert("Missing info", "Title required");
+      return;
+    }
+    if (fKind === "form" && fields.length === 0) {
+      Alert.alert("Missing info", "Add at least one field");
+      return;
+    }
+    if (fKind === "checklist" && items.length === 0) {
+      Alert.alert("Missing info", "Add at least one checklist item");
       return;
     }
     try {
-      await api.post("/forms/templates", {
+      const payload: any = {
         title: fTitle,
         description: fDesc,
-        fields,
-      });
+        kind: fKind,
+        fields: fKind === "form" ? fields : [],
+        checklist_items: fKind === "checklist" ? items : [],
+        target_percent: fKind === "checklist" ? parseFloat(fTarget) || 100 : null,
+      };
+      await api.post("/forms/templates", payload);
       setFormModal(false);
+      setFKind("form");
       setFTitle("");
       setFDesc("");
+      setFTarget("100");
       setFields([{ key: "name", label: "Full Name", type: "text", required: true }]);
+      setItems([
+        { id: "HL29", label: "HL 29", sub_keys: ["EXT", "INT"] },
+        { id: "HL30", label: "HL 30", sub_keys: ["EXT", "INT"] },
+      ]);
+      setBulkInput("");
       await load();
-      Alert.alert("Form Published", "Staff can now fill it out");
+      Alert.alert("Published", "Staff can now fill it out");
     } catch (e: any) {
       Alert.alert("Error", e.response?.data?.detail || "Failed");
     }
+  };
+
+  const bulkAddItems = () => {
+    const subs = subKeysInput.split(",").map((s) => s.trim()).filter(Boolean);
+    if (subs.length === 0) {
+      Alert.alert("Sub-tasks needed", "e.g. EXT,INT");
+      return;
+    }
+    const lines = bulkInput.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      Alert.alert("Add items", "Enter one item per line (e.g. HL 29)");
+      return;
+    }
+    const next = lines.map((label) => ({
+      id: label.replace(/\s+/g, "").toUpperCase(),
+      label,
+      sub_keys: subs,
+    }));
+    setItems([...items, ...next]);
+    setBulkInput("");
   };
 
   const createUser = async () => {
@@ -209,11 +289,45 @@ export default function AdminScreen() {
           <>
             <TouchableOpacity style={styles.addCta} onPress={() => setFormModal(true)}>
               <Feather name="plus" size={16} color="#fff" />
-              <Text style={styles.addCtaText}>Create Form Template</Text>
+              <Text style={styles.addCtaText}>Create Form / Checklist</Text>
             </TouchableOpacity>
-            <Text style={[typography.small, { marginTop: 8 }]}>
-              Build custom fillable forms with text, signature, checkbox, date, and dropdown fields.
+            <Text style={[typography.small, { marginTop: 8, marginBottom: 4 }]}>
+              Build custom forms or daily checklists (e.g. truck wash). Tap a checklist to view stats.
             </Text>
+            {allTemplates.map((t) => (
+              <View key={t.id} style={styles.card} testID={`tpl-${t.id}`}>
+                <View style={[styles.smBtn, { backgroundColor: t.kind === "checklist" ? colors.brand : colors.surface, width: 36, height: 36, borderRadius: 18 }]}>
+                  <Feather name={t.kind === "checklist" ? "check-square" : "file-text"} size={16} color={t.kind === "checklist" ? "#fff" : colors.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "700", color: colors.primary }}>{t.title}</Text>
+                  <Text style={typography.small}>
+                    {t.kind === "checklist"
+                      ? `${(t.checklist_items || []).length} items · target ${t.target_percent || 100}%`
+                      : `${(t.fields || []).length} fields`}
+                  </Text>
+                </View>
+                {t.kind === "checklist" && (
+                  <TouchableOpacity
+                    testID={`stats-${t.id}`}
+                    style={[styles.smBtn, { backgroundColor: colors.brand, width: 64, borderRadius: 14 }]}
+                    onPress={() => openStats(t, "month")}
+                  >
+                    <Feather name="bar-chart-2" size={14} color="#fff" />
+                    <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 4 }}>Stats</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  onPress={async () => {
+                    await api.delete(`/forms/templates/${t.id}`);
+                    await load();
+                  }}
+                  style={{ marginLeft: 8 }}
+                >
+                  <Feather name="trash-2" size={14} color={colors.alert} />
+                </TouchableOpacity>
+              </View>
+            ))}
           </>
         )}
 
@@ -272,67 +386,240 @@ export default function AdminScreen() {
             <TouchableOpacity onPress={() => setFormModal(false)}>
               <Feather name="x" size={24} color={colors.primary} />
             </TouchableOpacity>
-            <Text style={[typography.h3, { marginLeft: 12 }]}>New Form Template</Text>
+            <Text style={[typography.h3, { marginLeft: 12 }]}>New Template</Text>
           </View>
           <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
-            <TextInput style={styles.input} placeholder="Form Title" value={fTitle} onChangeText={setFTitle} placeholderTextColor={colors.textMuted} />
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+              {(["form", "checklist"] as const).map((k) => (
+                <TouchableOpacity
+                  key={k}
+                  testID={`kind-${k}`}
+                  style={[styles.typeChip, fKind === k && { backgroundColor: colors.primary }]}
+                  onPress={() => setFKind(k)}
+                >
+                  <Text style={{ color: fKind === k ? "#fff" : colors.primary, fontWeight: "700" }}>
+                    {k === "form" ? "Form" : "Checklist"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <TextInput style={styles.input} placeholder="Title (e.g. Daily Truck Wash)" value={fTitle} onChangeText={setFTitle} placeholderTextColor={colors.textMuted} />
             <TextInput style={[styles.input, { height: 70 }]} placeholder="Description" value={fDesc} onChangeText={setFDesc} multiline placeholderTextColor={colors.textMuted} />
-            <Text style={[typography.label, { marginTop: 16 }]}>Fields</Text>
-            {fields.map((f, idx) => (
-              <View key={idx} style={styles.fieldEditor}>
-                <TextInput
-                  style={[styles.input, { flex: 1 }]}
-                  placeholder="Label"
-                  value={f.label}
-                  onChangeText={(v) => {
-                    const c = [...fields];
-                    c[idx].label = v;
-                    c[idx].key = v.toLowerCase().replace(/\s+/g, "_") || `f${idx}`;
-                    setFields(c);
-                  }}
-                />
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
-                  {["text", "textarea", "date", "checkbox", "signature", "select", "number"].map((t) => (
-                    <TouchableOpacity
-                      key={t}
-                      onPress={() => {
+
+            {fKind === "form" ? (
+              <>
+                <Text style={[typography.label, { marginTop: 16 }]}>Fields</Text>
+                {fields.map((f, idx) => (
+                  <View key={idx} style={styles.fieldEditor}>
+                    <TextInput
+                      style={[styles.input, { flex: 1 }]}
+                      placeholder="Label"
+                      value={f.label}
+                      onChangeText={(v) => {
                         const c = [...fields];
-                        c[idx].type = t;
+                        c[idx].label = v;
+                        c[idx].key = v.toLowerCase().replace(/\s+/g, "_") || `f${idx}`;
                         setFields(c);
                       }}
-                      style={[styles.typeChip, f.type === t && { backgroundColor: colors.primary }]}
+                    />
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
+                      {["text", "textarea", "date", "checkbox", "signature", "select", "number"].map((t) => (
+                        <TouchableOpacity
+                          key={t}
+                          onPress={() => {
+                            const c = [...fields];
+                            c[idx].type = t;
+                            setFields(c);
+                          }}
+                          style={[styles.typeChip, f.type === t && { backgroundColor: colors.primary }]}
+                        >
+                          <Text style={{ color: f.type === t ? "#fff" : colors.primary, fontSize: 11, fontWeight: "600" }}>
+                            {t}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => setFields(fields.filter((_, i) => i !== idx))}
+                      style={{ alignSelf: "flex-end", marginTop: 4 }}
                     >
-                      <Text style={{ color: f.type === t ? "#fff" : colors.primary, fontSize: 11, fontWeight: "600" }}>
-                        {t}
-                      </Text>
+                      <Text style={{ color: colors.alert, fontSize: 12, fontWeight: "700" }}>REMOVE</Text>
                     </TouchableOpacity>
-                  ))}
-                </View>
+                  </View>
+                ))}
                 <TouchableOpacity
-                  onPress={() => setFields(fields.filter((_, i) => i !== idx))}
-                  style={{ alignSelf: "flex-end", marginTop: 4 }}
+                  style={[styles.modalBtn, { backgroundColor: colors.surface, marginTop: 8 }]}
+                  onPress={() =>
+                    setFields([
+                      ...fields,
+                      { key: `f${fields.length}`, label: "New Field", type: "text", required: false },
+                    ])
+                  }
                 >
-                  <Text style={{ color: colors.alert, fontSize: 12, fontWeight: "700" }}>REMOVE</Text>
+                  <Text style={{ color: colors.primary, fontWeight: "700" }}>+ Add Field</Text>
                 </TouchableOpacity>
-              </View>
-            ))}
+              </>
+            ) : (
+              <>
+                <Text style={[typography.label, { marginTop: 16 }]}>Sub-tasks per item (comma separated)</Text>
+                <TextInput
+                  testID="checklist-subkeys"
+                  style={styles.input}
+                  placeholder="EXT,INT"
+                  value={subKeysInput}
+                  onChangeText={setSubKeysInput}
+                  placeholderTextColor={colors.textMuted}
+                />
+                <Text style={[typography.label, { marginTop: 16 }]}>Target % (e.g. 100)</Text>
+                <TextInput
+                  testID="checklist-target"
+                  style={styles.input}
+                  placeholder="100"
+                  value={fTarget}
+                  onChangeText={setFTarget}
+                  keyboardType="numeric"
+                  placeholderTextColor={colors.textMuted}
+                />
+
+                <Text style={[typography.label, { marginTop: 16 }]}>Items ({items.length})</Text>
+                {items.map((it, idx) => (
+                  <View key={idx} style={[styles.fieldEditor, { flexDirection: "row", alignItems: "center", gap: 8 }]}>
+                    <TextInput
+                      style={[styles.input, { flex: 1, marginTop: 0 }]}
+                      placeholder="Label (e.g. HL 29)"
+                      value={it.label}
+                      onChangeText={(v) => {
+                        const c = [...items];
+                        c[idx] = { ...c[idx], label: v, id: v.replace(/\s+/g, "").toUpperCase() || `IT${idx}` };
+                        setItems(c);
+                      }}
+                    />
+                    <TouchableOpacity onPress={() => setItems(items.filter((_, i) => i !== idx))}>
+                      <Feather name="trash-2" size={16} color={colors.alert} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+                <TouchableOpacity
+                  style={[styles.modalBtn, { backgroundColor: colors.surface, marginTop: 8 }]}
+                  onPress={() => {
+                    const subs = subKeysInput.split(",").map((s) => s.trim()).filter(Boolean);
+                    setItems([...items, { id: `IT${items.length}`, label: `Item ${items.length + 1}`, sub_keys: subs.length ? subs : ["EXT", "INT"] }]);
+                  }}
+                >
+                  <Text style={{ color: colors.primary, fontWeight: "700" }}>+ Add Single Item</Text>
+                </TouchableOpacity>
+
+                <Text style={[typography.label, { marginTop: 16 }]}>Bulk add (one item per line)</Text>
+                <TextInput
+                  testID="checklist-bulk"
+                  style={[styles.input, { height: 100, textAlignVertical: "top", paddingTop: 10 }]}
+                  multiline
+                  placeholder={"HL 29\nHL 30\nHL 31"}
+                  value={bulkInput}
+                  onChangeText={setBulkInput}
+                  placeholderTextColor={colors.textMuted}
+                />
+                <TouchableOpacity
+                  testID="checklist-bulk-add"
+                  style={[styles.modalBtn, { backgroundColor: colors.surface, marginTop: 8 }]}
+                  onPress={bulkAddItems}
+                >
+                  <Text style={{ color: colors.primary, fontWeight: "700" }}>Append items</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
             <TouchableOpacity
-              style={[styles.modalBtn, { backgroundColor: colors.surface, marginTop: 8 }]}
-              onPress={() =>
-                setFields([
-                  ...fields,
-                  { key: `f${fields.length}`, label: "New Field", type: "text", required: false },
-                ])
-              }
-            >
-              <Text style={{ color: colors.primary, fontWeight: "700" }}>+ Add Field</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.modalBtn, { backgroundColor: colors.primary, marginTop: 12 }]}
+              testID="publish-template"
+              style={[styles.modalBtn, { backgroundColor: colors.primary, marginTop: 16 }]}
               onPress={createForm}
             >
-              <Text style={{ color: "#fff", fontWeight: "700" }}>Publish Form</Text>
+              <Text style={{ color: "#fff", fontWeight: "700" }}>Publish</Text>
             </TouchableOpacity>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Stats Modal */}
+      <Modal visible={!!statsTpl} animationType="slide" onRequestClose={() => setStatsTpl(null)}>
+        <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
+          <View style={styles.header}>
+            <TouchableOpacity onPress={() => setStatsTpl(null)}>
+              <Feather name="x" size={24} color={colors.primary} />
+            </TouchableOpacity>
+            <Text style={[typography.h3, { marginLeft: 12, flex: 1 }]} numberOfLines={1}>
+              {statsTpl?.title} · Stats
+            </Text>
+          </View>
+          <View style={{ flexDirection: "row", padding: spacing.md, gap: 6 }}>
+            {(["day", "week", "month", "all"] as const).map((r) => (
+              <TouchableOpacity
+                key={r}
+                onPress={() => statsTpl && openStats(statsTpl, r)}
+                style={[styles.tab, statsRange === r && styles.tabActive]}
+                testID={`range-${r}`}
+              >
+                <Text style={[styles.tabText, statsRange === r && styles.tabTextActive]}>{r}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm }}>
+            {statsBusy ? (
+              <Text style={typography.body}>Loading stats…</Text>
+            ) : stats ? (
+              <>
+                <View style={[styles.card, { flexDirection: "column", alignItems: "stretch" }]}>
+                  <Text style={typography.label}>Overall completion</Text>
+                  <Text style={{ fontSize: 38, fontWeight: "700", color: colors.primary, marginTop: 4 }}>
+                    {stats.overall_percent}%
+                  </Text>
+                  <View style={{ height: 8, backgroundColor: colors.surface, borderRadius: 4, marginTop: 8, overflow: "hidden" }}>
+                    <View
+                      style={{
+                        width: `${Math.min(100, stats.overall_percent)}%`,
+                        height: "100%",
+                        backgroundColor: stats.on_target ? colors.success : colors.alert,
+                      }}
+                    />
+                  </View>
+                  <Text style={[typography.small, { marginTop: 6 }]}>
+                    {stats.overall_done}/{stats.overall_possible} sub-tasks completed across {stats.submissions} submissions · target {stats.target_percent || 100}%
+                  </Text>
+                  <Text style={{ marginTop: 6, fontWeight: "700", color: stats.on_target ? colors.success : colors.alert }}>
+                    {stats.on_target ? "✓ On target" : "✗ Below target"}
+                  </Text>
+                </View>
+
+                <Text style={[typography.label, { marginTop: 16 }]}>Per item</Text>
+                {stats.items.map((it: any) => {
+                  const total = it.sub_keys.length * stats.submissions;
+                  const done = Object.values(it.counts).reduce((a: any, b: any) => a + b, 0) as number;
+                  const pct = total > 0 ? Math.round((done / total) * 1000) / 10 : 0;
+                  return (
+                    <View key={it.id} style={[styles.card, { flexDirection: "column", alignItems: "stretch" }]}>
+                      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                        <Text style={{ fontWeight: "700", color: colors.primary }}>{it.label}</Text>
+                        <Text style={{ fontWeight: "700", color: pct >= (stats.target_percent || 100) ? colors.success : colors.alert }}>
+                          {pct}%
+                        </Text>
+                      </View>
+                      <View style={{ flexDirection: "row", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                        {it.sub_keys.map((sk: string) => (
+                          <View key={sk} style={[styles.typeChip, { backgroundColor: colors.surface }]}>
+                            <Text style={{ fontSize: 11, fontWeight: "700", color: colors.primary }}>
+                              {sk}: {it.counts[sk]}/{stats.submissions} · missed {Math.max(0, stats.submissions - it.counts[sk])}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  );
+                })}
+              </>
+            ) : (
+              <Text style={typography.body}>No data.</Text>
+            )}
           </ScrollView>
         </SafeAreaView>
       </Modal>
