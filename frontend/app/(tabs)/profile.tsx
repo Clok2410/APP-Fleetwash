@@ -1,0 +1,352 @@
+import React, { useCallback, useState } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Alert,
+  Modal,
+  TextInput,
+  RefreshControl,
+} from "react-native";
+import { useFocusEffect, useRouter } from "expo-router";
+import { Feather } from "@expo/vector-icons";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { api } from "../../src/api";
+import { useAuth } from "../../src/auth";
+import { colors, spacing, radius, typography } from "../../src/theme";
+
+export default function ProfileScreen() {
+  const { user, logout } = useAuth();
+  const router = useRouter();
+  const [requests, setRequests] = useState<any[]>([]);
+  const [balance, setBalance] = useState<any>(null);
+  const [history, setHistory] = useState<any[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [reqOpen, setReqOpen] = useState(false);
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [reason, setReason] = useState("");
+  const [type, setType] = useState<"annual" | "sick" | "unpaid">("annual");
+
+  const load = useCallback(async () => {
+    try {
+      const [r, b, h] = await Promise.all([
+        api.get("/holidays/requests"),
+        api.get("/holidays/balance"),
+        api.get("/clock/history"),
+      ]);
+      setRequests(r.data);
+      setBalance(b.data);
+      setHistory(h.data.slice(0, 10));
+    } catch {}
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
+
+  const submitRequest = async () => {
+    if (!start || !end) {
+      Alert.alert("Missing dates", "Please enter both start and end dates (YYYY-MM-DD)");
+      return;
+    }
+    try {
+      await api.post("/holidays/requests", { start_date: start, end_date: end, reason, type });
+      setReqOpen(false);
+      setStart("");
+      setEnd("");
+      setReason("");
+      await load();
+    } catch (e: any) {
+      Alert.alert("Error", e.response?.data?.detail || "Failed");
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.safe} edges={["top"]}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={async () => {
+              setRefreshing(true);
+              await load();
+              setRefreshing(false);
+            }}
+          />
+        }
+      >
+        <View style={styles.profileCard}>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{user?.name?.[0]?.toUpperCase() || "?"}</Text>
+          </View>
+          <Text style={typography.h2}>{user?.name}</Text>
+          <Text style={typography.small}>{user?.email}</Text>
+          <View style={styles.rolePill}>
+            <Feather
+              name={user?.role === "admin" ? "shield" : "user"}
+              size={12}
+              color={colors.brand}
+            />
+            <Text style={styles.rolePillText}>{user?.role?.toUpperCase()}</Text>
+          </View>
+        </View>
+
+        {balance && (
+          <View style={styles.row3}>
+            <Stat label="Total" value={balance.entitlement} />
+            <Stat label="Used" value={balance.used} color={colors.alert} />
+            <Stat label="Left" value={balance.remaining} color={colors.success} />
+          </View>
+        )}
+
+        <View style={styles.section}>
+          <View style={styles.sectionHead}>
+            <Text style={typography.label}>Holiday Requests</Text>
+            <TouchableOpacity testID="new-holiday-btn" style={styles.addBtn} onPress={() => setReqOpen(true)}>
+              <Feather name="plus" size={14} color="#fff" />
+              <Text style={{ color: "#fff", fontWeight: "600", marginLeft: 4, fontSize: 13 }}>
+                Request
+              </Text>
+            </TouchableOpacity>
+          </View>
+          {requests.length === 0 ? (
+            <Text style={[typography.small, { paddingVertical: 16 }]}>No requests yet.</Text>
+          ) : (
+            requests.map((r) => (
+              <View key={r.id} style={styles.requestRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "600", color: colors.primary }}>
+                    {r.start_date} → {r.end_date}
+                  </Text>
+                  <Text style={typography.small}>
+                    {r.type} {r.reason ? `· ${r.reason}` : ""}
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.statusPill,
+                    r.status === "approved" && { backgroundColor: "#D1FAE5" },
+                    r.status === "rejected" && { backgroundColor: "#FEE2E2" },
+                  ]}
+                >
+                  <Text style={styles.statusText}>{r.status}</Text>
+                </View>
+              </View>
+            ))
+          )}
+        </View>
+
+        <View style={styles.section}>
+          <Text style={typography.label}>Recent Clock Entries</Text>
+          {history.length === 0 ? (
+            <Text style={[typography.small, { paddingVertical: 16 }]}>No entries yet.</Text>
+          ) : (
+            history.map((h) => (
+              <View key={h.id} style={styles.requestRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "600", color: colors.primary }}>
+                    {h.clock_in?.slice(0, 10)}
+                  </Text>
+                  <Text style={typography.small}>
+                    {h.clock_in?.slice(11, 16)} – {h.clock_out ? h.clock_out.slice(11, 16) : "open"}
+                  </Text>
+                </View>
+                <Text style={{ fontWeight: "700", color: colors.primary }}>
+                  {h.duration_seconds
+                    ? `${Math.floor(h.duration_seconds / 3600)}h ${Math.floor((h.duration_seconds % 3600) / 60)}m`
+                    : "—"}
+                </Text>
+              </View>
+            ))
+          )}
+        </View>
+
+        {user?.role === "admin" && (
+          <TouchableOpacity
+            testID="open-admin-from-profile"
+            style={[styles.btn, { marginBottom: spacing.sm, backgroundColor: colors.brand }]}
+            onPress={() => router.push("/admin")}
+          >
+            <Feather name="shield" size={16} color="#fff" />
+            <Text style={[styles.btnText, { color: "#fff", marginLeft: 8 }]}>Admin Panel</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity testID="logout-btn" style={[styles.btn, styles.btnDanger]} onPress={logout}>
+          <Feather name="log-out" size={16} color={colors.alert} />
+          <Text style={[styles.btnText, { color: colors.alert, marginLeft: 8 }]}>Sign Out</Text>
+        </TouchableOpacity>
+      </ScrollView>
+
+      <Modal visible={reqOpen} animationType="slide" transparent onRequestClose={() => setReqOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={typography.h3}>Request Holiday</Text>
+            <View style={{ flexDirection: "row", gap: 8, marginTop: spacing.md }}>
+              {(["annual", "sick", "unpaid"] as const).map((t) => (
+                <TouchableOpacity
+                  key={t}
+                  onPress={() => setType(t)}
+                  style={[styles.typeChip, type === t && { backgroundColor: colors.primary }]}
+                >
+                  <Text style={{ color: type === t ? "#fff" : colors.primary, fontWeight: "600", fontSize: 13 }}>
+                    {t}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TextInput
+              testID="holiday-start"
+              style={styles.input}
+              placeholder="Start date (YYYY-MM-DD)"
+              value={start}
+              onChangeText={setStart}
+              placeholderTextColor={colors.textMuted}
+            />
+            <TextInput
+              testID="holiday-end"
+              style={styles.input}
+              placeholder="End date (YYYY-MM-DD)"
+              value={end}
+              onChangeText={setEnd}
+              placeholderTextColor={colors.textMuted}
+            />
+            <TextInput
+              style={[styles.input, { height: 80 }]}
+              placeholder="Reason (optional)"
+              value={reason}
+              onChangeText={setReason}
+              multiline
+              placeholderTextColor={colors.textMuted}
+            />
+            <View style={{ flexDirection: "row", gap: 8, marginTop: spacing.md }}>
+              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: colors.surface }]} onPress={() => setReqOpen(false)}>
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity testID="submit-holiday" style={[styles.modalBtn, { backgroundColor: colors.primary }]} onPress={submitRequest}>
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Submit</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </SafeAreaView>
+  );
+}
+
+function Stat({ label, value, color }: any) {
+  return (
+    <View style={styles.statBox}>
+      <Text style={typography.label}>{label}</Text>
+      <Text style={[styles.statValue, color && { color }]}>{value}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: colors.background },
+  container: { padding: spacing.lg, paddingBottom: spacing.xxl, gap: spacing.md },
+  profileCard: {
+    alignItems: "center",
+    padding: spacing.lg,
+    backgroundColor: colors.surface,
+    borderRadius: radius.xl,
+  },
+  avatar: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  avatarText: { color: "#fff", fontSize: 28, fontWeight: "700" },
+  rolePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.brandSoft,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    marginTop: 8,
+  },
+  rolePillText: { color: colors.brand, fontWeight: "700", fontSize: 11, marginLeft: 4, letterSpacing: 1 },
+  row3: { flexDirection: "row", gap: 8 },
+  statBox: {
+    flex: 1,
+    padding: spacing.md,
+    backgroundColor: "#fff",
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  statValue: { fontSize: 24, fontWeight: "700", color: colors.primary, marginTop: 4 },
+  section: {
+    backgroundColor: "#fff",
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  sectionHead: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  addBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+  },
+  requestRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    borderTopColor: colors.border,
+    borderTopWidth: 1,
+  },
+  statusPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceSecondary,
+  },
+  statusText: { fontSize: 11, fontWeight: "700", textTransform: "uppercase" },
+  btn: {
+    flexDirection: "row",
+    height: 52,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  btnDanger: { backgroundColor: "#FEE2E2" },
+  btnText: { fontWeight: "700", fontSize: 15 },
+  modalBg: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.4)" },
+  modalCard: { backgroundColor: "#fff", padding: spacing.lg, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl },
+  typeChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+  },
+  input: {
+    height: 48,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.sm,
+    color: colors.textPrimary,
+  },
+  modalBtn: { flex: 1, height: 48, borderRadius: radius.pill, alignItems: "center", justifyContent: "center" },
+});
