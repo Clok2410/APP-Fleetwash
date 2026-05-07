@@ -46,9 +46,25 @@ A mobile-first workforce OS that gives every employee one tap to clock in, reque
 - Server generates printable PDF of individual submissions on demand via ReportLab.
 - **AI summary** of submitted forms (Emergent LLM Key + Claude Sonnet 4.5)
 
-### 8. Admin Alerts Dashboard *(NEW)*
-- `/api/admin/checklist-alerts` returns checklists that are below target today or have no submission yet today.
-- Home dashboard shows a red alert card (admin-only) listing each affected checklist with current % vs target. Tapping a row deep-links to the Admin Panel.
+### 8. Admin Alerts & Notifications
+- `/api/admin/checklist-alerts` returns checklists below target today / no submission yet today.
+- Home dashboard shows red admin-only alert card linking to Admin Panel.
+- **In-app notifications** *(NEW)*: every admin gets a notification (`/api/notifications` inbox) when:
+  - A checklist submission lands below target
+  - Someone clocks in **off-site** (outside any depot's geofence)
+  - Admin manually triggers `/api/admin/scan-alerts`
+- Bell icon with unread badge on Home opens a NotificationsModal with mark-as-read controls.
+
+### 9. Geofencing & Multiple Depots *(NEW)*
+- Admin Panel → **Depots** tab. Each depot: `name`, `lat`, `lng`, `radius_m`.
+- Clock-in captures device GPS via `expo-location`, computes haversine distance to nearest depot, and stamps `off_site=true` on the entry if outside the radius.
+- Off-site clock-ins are **allowed** but **flagged** for admin review and notify all admins instantly.
+
+### 10. Weekly Compliance Digest *(NEW)*
+- APScheduler weekly job (Mondays 09:00 UTC) generates a CSV digest of every checklist's compliance over the last 7 days.
+- Manual trigger via Admin Panel → Depots tab → "Send Weekly Digest Now" button.
+- CSV is persisted server-side and emailed to all admins via **Resend** (currently MOCKED — no RESEND_API_KEY set; backend logs `[MOCKED EMAIL]`. Plug a key into `/app/backend/.env` to go live).
+- `/api/admin/digests` lists past digests; `/api/admin/digests/{id}/download` returns the CSV.
 
 ### 7. Admin Panel (modal route)
 - Tabs: Holidays, Shifts, Forms, Users
