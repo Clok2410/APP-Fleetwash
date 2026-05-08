@@ -20,6 +20,7 @@ import FormBuilderModal from "../src/components/FormBuilderModal";
 import StatsModal from "../src/components/StatsModal";
 import OffsiteMap from "../src/components/OffsiteMap";
 import CustomerModal from "../src/components/CustomerModal";
+import WebDropZone from "../src/components/WebDropZone";
 import { Calendar } from "react-native-calendars";
 
 export default function AdminScreen() {
@@ -229,32 +230,37 @@ export default function AdminScreen() {
     try {
       const DocumentPicker = await import("expo-document-picker");
       const FileSystem = await import("expo-file-system");
-      const res = await DocumentPicker.getDocumentAsync({
+      const res: any = await DocumentPicker.getDocumentAsync({
         type: "application/pdf",
         copyToCacheDirectory: true,
         multiple: false,
       });
       if (res.canceled || !res.assets || res.assets.length === 0) return;
       const file = res.assets[0];
-      let base64 = (file as any).base64 || "";
+      const base64 = await readAssetAsBase64(file, FileSystem);
       if (!base64) {
-        if (Platform.OS === "web" && (file as any).file) {
-          const f: File = (file as any).file;
-          const ab = await f.arrayBuffer();
-          let binary = "";
-          const bytes = new Uint8Array(ab);
-          for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-          base64 = btoa(binary);
-        } else {
-          base64 = await FileSystem.readAsStringAsync(file.uri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-        }
+        Alert.alert("Pick failed", "Could not read PDF contents from picker.");
+        return;
       }
       setPdfPicked({ name: file.name || "form.pdf", base64 });
       if (!pdfTitle) setPdfTitle((file.name || "form.pdf").replace(/\.pdf$/i, ""));
     } catch (e: any) {
       Alert.alert("Pick failed", String(e?.message || e));
+    }
+  };
+
+  const onWebDrop = async (file: File) => {
+    try {
+      const ab = await file.arrayBuffer();
+      const bytes = new Uint8Array(ab);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+      const base64 = btoa(binary);
+      setPdfPicked({ name: file.name || "form.pdf", base64 });
+      if (!pdfTitle) setPdfTitle((file.name || "form.pdf").replace(/\.pdf$/i, ""));
+      setPdfModalOpen(true);
+    } catch (e: any) {
+      Alert.alert("Drop failed", String(e?.message || e));
     }
   };
 
@@ -1160,16 +1166,26 @@ export default function AdminScreen() {
               multiline
               placeholderTextColor={colors.textMuted}
             />
-            <TouchableOpacity
-              testID="pick-pdf-btn"
-              onPress={pickPdf}
-              style={[styles.input, { flexDirection: "row", alignItems: "center", justifyContent: "center", marginTop: spacing.sm, height: 56 }]}
-            >
-              <Feather name={pdfPicked ? "check-circle" : "paperclip"} size={16} color={pdfPicked ? colors.success : colors.primary} />
-              <Text style={{ marginLeft: 8, color: colors.primary, fontWeight: "600" }} numberOfLines={1}>
-                {pdfPicked ? pdfPicked.name : "Pick PDF file"}
-              </Text>
-            </TouchableOpacity>
+            <View style={{ marginTop: spacing.sm }}>
+              <WebDropZone
+                onFile={onWebDrop}
+                style={{ minHeight: 92, alignItems: "center", justifyContent: "center" } as any}
+              >
+                <TouchableOpacity
+                  testID="pick-pdf-btn"
+                  onPress={pickPdf}
+                  style={{ alignItems: "center", justifyContent: "center", padding: 8 }}
+                >
+                  <Feather name={pdfPicked ? "check-circle" : "upload-cloud"} size={22} color={pdfPicked ? colors.success : colors.primary} />
+                  <Text style={{ marginTop: 6, color: colors.primary, fontWeight: "700" }} numberOfLines={1}>
+                    {pdfPicked ? pdfPicked.name : Platform.OS === "web" ? "Drag PDF here, or tap to pick" : "Tap to pick PDF file"}
+                  </Text>
+                  {!pdfPicked && Platform.OS === "web" ? (
+                    <Text style={[typography.small, { marginTop: 2, color: colors.textMuted }]}>Drop a .pdf or click anywhere</Text>
+                  ) : null}
+                </TouchableOpacity>
+              </WebDropZone>
+            </View>
             <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
               <TouchableOpacity
                 style={[styles.modalBtn, { backgroundColor: colors.surface }]}
@@ -1205,6 +1221,48 @@ function formatBytesAdmin(n: number) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+async function readAssetAsBase64(file: any, FileSystem: any): Promise<string> {
+  // 1) Already provided
+  if (file?.base64) return file.base64;
+  // 2) Web returns a File object on `.file`
+  if (Platform.OS === "web") {
+    if (file?.file) {
+      try {
+        const ab = await file.file.arrayBuffer();
+        const bytes = new Uint8Array(ab);
+        let binary = "";
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        return btoa(binary);
+      } catch {}
+    }
+    // 3) data URL fallback
+    if (typeof file?.uri === "string" && file.uri.startsWith("data:")) {
+      const idx = file.uri.indexOf(",");
+      if (idx >= 0) return file.uri.slice(idx + 1);
+    }
+    // 4) blob URL — fetch it
+    if (typeof file?.uri === "string" && file.uri.startsWith("blob:")) {
+      try {
+        const r = await fetch(file.uri);
+        const blob = await r.blob();
+        const ab = await blob.arrayBuffer();
+        const bytes = new Uint8Array(ab);
+        let binary = "";
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        return btoa(binary);
+      } catch {}
+    }
+  }
+  // 5) Native: use FileSystem
+  try {
+    return await FileSystem.readAsStringAsync(file.uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+  } catch {
+    return "";
+  }
 }
 
 const styles = StyleSheet.create({

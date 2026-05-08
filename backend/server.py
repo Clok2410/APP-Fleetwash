@@ -245,6 +245,14 @@ class PdfFormSubmissionIn(BaseModel):
     flatten: bool = True  # flatten fields into static text after filling
 
 
+class PdfSessionStartIn(BaseModel):
+    name: Optional[str] = None
+
+
+class PdfSessionPatchIn(BaseModel):
+    values: Dict[str, Any]
+
+
 # ----------------- App init -----------------
 app = FastAPI(title="StaffHub API")
 api = APIRouter(prefix="/api")
@@ -1814,6 +1822,147 @@ async def get_pdf_form_submission(sid: str, current=Depends(get_current_user)):
     if current.get("role") != "admin" and doc.get("user_id") != current["id"]:
         raise HTTPException(status_code=403, detail="Forbidden")
     return serialize(doc)
+
+
+# ----------------- PDF Form Sessions (collaborative) -----------------
+@api.post("/pdf-forms/templates/{tid}/sessions")
+async def start_pdf_session(tid: str, body: PdfSessionStartIn, current=Depends(get_current_user)):
+    tmpl = await db.pdf_form_templates.find_one({"id": tid})
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    sess = {
+        "id": str(uuid.uuid4()),
+        "template_id": tid,
+        "template_title": tmpl.get("title"),
+        "name": (body.name or f"{tmpl.get('title','Form')} #{datetime.utcnow().strftime('%Y%m%d-%H%M')}"),
+        "values": {},
+        "status": "draft",
+        "created_by": current["id"],
+        "created_by_name": current.get("name"),
+        "created_at": now_utc(),
+        "last_editor_id": current["id"],
+        "last_editor_name": current.get("name"),
+        "last_edited_at": now_utc(),
+        "field_count": int(tmpl.get("field_count") or 0),
+    }
+    await db.pdf_form_sessions.insert_one(sess)
+    return serialize(sess)
+
+
+@api.get("/pdf-forms/sessions")
+async def list_pdf_sessions(
+    template_id: Optional[str] = None,
+    status: Optional[str] = None,
+    _=Depends(get_current_user),
+):
+    q: Dict[str, Any] = {}
+    if template_id:
+        q["template_id"] = template_id
+    if status:
+        q["status"] = status
+    docs = await db.pdf_form_sessions.find(q).sort("last_edited_at", -1).to_list(500)
+    out = []
+    for d in docs:
+        s = serialize(d)
+        s.pop("filled_pdf_base64", None)
+        out.append(s)
+    return out
+
+
+@api.get("/pdf-forms/sessions/{sid}")
+async def get_pdf_session(sid: str, _=Depends(get_current_user)):
+    doc = await db.pdf_form_sessions.find_one({"id": sid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return serialize(doc)
+
+
+@api.patch("/pdf-forms/sessions/{sid}")
+async def patch_pdf_session(sid: str, body: PdfSessionPatchIn, current=Depends(get_current_user)):
+    doc = await db.pdf_form_sessions.find_one({"id": sid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if doc.get("status") == "completed" and current.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Session is locked. Ask admin to reopen.")
+    new_values = dict(doc.get("values", {}))
+    new_values.update(body.values or {})
+    await db.pdf_form_sessions.update_one(
+        {"id": sid},
+        {"$set": {
+            "values": new_values,
+            "last_editor_id": current["id"],
+            "last_editor_name": current.get("name"),
+            "last_edited_at": now_utc(),
+        }},
+    )
+    return {"ok": True, "saved_keys": len(body.values or {}), "total_filled": sum(1 for v in new_values.values() if v not in ("", None, False))}
+
+
+@api.post("/pdf-forms/sessions/{sid}/complete")
+async def complete_pdf_session(sid: str, _=Depends(require_admin), current=Depends(get_current_user)):
+    import base64
+    sess = await db.pdf_form_sessions.find_one({"id": sid})
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+    tmpl = await db.pdf_form_templates.find_one({"id": sess["template_id"]})
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template missing")
+    try:
+        pdf_bytes = base64.b64decode(tmpl["pdf_base64"])
+        filled = _fill_pdf(pdf_bytes, sess.get("values") or {}, flatten=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fill failed: {e}")
+    await db.pdf_form_sessions.update_one(
+        {"id": sid},
+        {"$set": {
+            "status": "completed",
+            "completed_at": now_utc(),
+            "completed_by": current["id"],
+            "completed_by_name": current.get("name"),
+            "filled_pdf_base64": base64.b64encode(filled).decode("utf-8"),
+            "size_bytes": len(filled),
+        }},
+    )
+    return {"ok": True}
+
+
+@api.post("/pdf-forms/sessions/{sid}/reopen")
+async def reopen_pdf_session(sid: str, _=Depends(require_admin)):
+    res = await db.pdf_form_sessions.update_one(
+        {"id": sid},
+        {"$set": {"status": "draft"}, "$unset": {"filled_pdf_base64": "", "completed_at": "", "completed_by": "", "completed_by_name": ""}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"ok": True}
+
+
+@api.get("/pdf-forms/sessions/{sid}/pdf")
+async def get_pdf_session_pdf(sid: str, _=Depends(get_current_user)):
+    """Return current state PDF (filled with whatever values are saved). Works for drafts and completed."""
+    import base64
+    sess = await db.pdf_form_sessions.find_one({"id": sid})
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if sess.get("status") == "completed" and sess.get("filled_pdf_base64"):
+        return {"pdf_base64": sess["filled_pdf_base64"], "status": "completed"}
+    tmpl = await db.pdf_form_templates.find_one({"id": sess["template_id"]})
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template missing")
+    try:
+        pdf_bytes = base64.b64decode(tmpl["pdf_base64"])
+        filled = _fill_pdf(pdf_bytes, sess.get("values") or {}, flatten=False)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fill failed: {e}")
+    return {"pdf_base64": base64.b64encode(filled).decode("utf-8"), "status": sess.get("status", "draft")}
+
+
+@api.delete("/pdf-forms/sessions/{sid}")
+async def delete_pdf_session(sid: str, _=Depends(require_admin)):
+    res = await db.pdf_form_sessions.delete_one({"id": sid})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"ok": True}
 
 
 # ----------------- Startup -----------------
