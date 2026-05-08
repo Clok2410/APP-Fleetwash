@@ -246,6 +246,52 @@ frontend:
         - working: true
           agent: "testing"
           comment: "Verified: Profile +Request Holiday opens modal with holiday-calendar (testID). Tapped day 18 then 22, range highlight visible, filled reason 'Family event RT', submit-holiday returned successfully and request shows in list. Logged into admin → admin-tab-holidays default shows admin-holiday-calendar; Approve/Reject buttons visible for pending; Approve click cleared pending entry. Team holiday calendar dots present."
+  - task: "Per-user availability filter on shift modal + tap-to-edit shift"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/admin.tsx, /app/backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Admin Assign-Shift modal now flags users as 'Unavailable' (amber row + warning icon) when they have a pending availability=false on the chosen start date. Shift cards in Admin Shifts list are tappable → opens Edit modal with same availability hint and updates via PATCH /api/shifts/{id}. Backend route added (require_admin)."
+        - working: true
+          agent: "testing"
+          comment: "Backend portion (PATCH /api/shifts/{sid}) verified via /app/admin_features_test.py against the public proxy URL. (a) POST /shifts admin recurring=none returned created=1; (b) PATCH new title/start/end/location → response reflects all four updates and user_id/user_name remain Jane Doe (unchanged); (c) PATCH with a different user_id (admin's id) → user_name auto-resolved to 'Admin'; (d) PATCH with customer_id+site_id (Aer Lingus / Dublin Hangar from existing CRM) → customer_name and site_name auto-populated; (e) PATCH as staff → 403 'Admin access required'; (f) PATCH non-existent shift → 404 'Shift not found'; (g) DELETE cleanup 200. Frontend admin.tsx UI not tested per instructions."
+  - task: "Holiday entitlement editor (admin)"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/admin.tsx, /app/backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Admin Users tab shows holiday_entitlement and a calendar-icon button per user. Tap → modal to edit days (0-365). Backend: PATCH /api/users/{user_id}/entitlement?value=N (admin only). After save, holiday balance recomputes against new entitlement on next /holidays/balance call."
+        - working: true
+          agent: "testing"
+          comment: "Backend verified via /app/admin_features_test.py against the public proxy URL (jane@company.com). (a) PATCH /api/users/{staff_id}/entitlement?value=30 as admin → 200 {ok:true, holiday_entitlement:30}; (b) GET /api/holidays/balance as that staff returns entitlement=30 (used=6, pending=5, remaining=19) — value persisted to the user document and balance recomputes accordingly; (c) value=-5 → 400 'Entitlement must be 0–365 days'; (d) value=400 → 400 same detail; (e) PATCH as STAFF → 403 'Admin access required'; (f) PATCH /api/users/nonexistent/entitlement → 404 'User not found'; (g) restored to 25. All 7 sub-cases passed."
+  - task: "Real Push notifications via Expo Push API"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py, /app/frontend/src/push.ts, /app/frontend/src/auth.tsx, /app/frontend/app.json"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Backend: added notify(user_id,...) helper that creates an in-app notification AND calls Expo Push API (https://exp.host/--/api/v2/push/send) when expo_push_token is set on the user. Wired into create_shift, update_shift, decide_holiday, decide_swap. New endpoint POST /api/users/me/push-token persists token. Frontend: src/push.ts uses expo-notifications + expo-device to register on login (silently ignores web). auth.tsx now calls registerForPushAsync after login/refresh and unregisters on logout. expo-notifications added to app.json plugins. Note: actual native push delivery only works on a physical device with Expo Go (cloud preview can't deliver native pushes), but the wiring is end-to-end."
+        - working: true
+          agent: "testing"
+          comment: "Backend wiring verified via /app/admin_features_test.py against public proxy URL. (3a) POST /api/users/me/push-token as staff with {token:'ExponentPushToken[abc123]'} → 200 {ok:true}; immediately GET /api/auth/me returns expo_push_token='ExponentPushToken[abc123]'. (3b) {token:'garbage-token'} → 400 'Invalid Expo push token'. (3c) {token:''} → 200 {ok:true} and /auth/me shows expo_push_token=null. (3d) Admin valid-token flow → 200 ok. SMOKE (notify must not break flows when user has no expo_push_token): with both staff and admin tokens cleared, (4a) POST /api/shifts admin → 200 created:1 (notify(staff) ran without token); (4b) staff POST /api/holidays/requests → 200 pending, then admin POST /holidays/requests/{id}/decision?decision=rejected → 200 ok:true (notify(staff) safe); (4c) staff POST /api/shifts/{id}/swap → 200 pending, admin POST /shifts/swaps/{id}/decision?decision=rejected → 200 ok:true (notify both parties safe). All notify() calls wrapped in try/except so missing tokens never break the request; _send_expo_push also short-circuits when no valid Exponent tokens are present. End-to-end backend behaviour matches design."
+
+agent_communication_v3:
+    - agent: "main"
+      message: "Implemented C+D+B(tap-to-edit)+A(real push). Please run a focused backend regression: 1) PATCH /api/users/{id}/entitlement (admin only, validates 0-365) and verify /api/holidays/balance reflects the change for that user; 2) PATCH /api/shifts/{sid} (admin only) updates user_id/title/start/end/location/customer_id/site_id and customer_name/site_name auto-resolve; 3) POST /api/users/me/push-token accepts ExponentPushToken[...] strings, rejects garbage with 400; empty token clears it (sets expo_push_token to null); 4) Smoke that decide_holiday/decide_swap/create_shift no longer crash (notify() must succeed even without a push token). Use creds in /app/memory/test_credentials.md."
   - task: "Frontend smoke flow — Auth, Schedule, Profile, Admin (PDF/Shifts/Swaps), Forms"
     implemented: true
     working: true
@@ -286,3 +332,5 @@ agent_communication:
       message: "Frontend smoke (mobile 390x844) end-to-end PASSED for all 7 requested flows: (1) Auth admin+staff login OK; (2) Schedule three tabs visible; availability-calendar tap-date → mark-off saves and 'Your unavailable days' section appears; mark-on toggles back. (3) Profile +Request Holiday opens holiday-calendar; 2-date range select + reason + submit-holiday → request appears in list and admin-side. (4) /admin defaults to holidays tab; admin-holiday-calendar renders with dots; Approve clears pending request. (5) Admin Shifts → Assign New Shift → Jane Doe + title + start + end + weekly + count=3 + shift-assign-submit → POST /api/shifts 200 with {created:3, series_id, first.recurring=weekly}; DOM shows 3 shifts with '· weekly' suffix. NB: Alert.alert uses RN-Web custom modal (not browser dialog) so dialog handler can't capture text — verified via network response. (6) Admin Swap Requests section visible with swap-approve-{id}/swap-reject-{id} after staff submitted swap on a shift via swap-{id}/swap-submit. (7) Admin PDF tab loads (open-pdf-upload visible); Staff Forms tab loads templates including PDF/Fillable section. No critical issues."
     - agent: "testing"
       message: "Recurring shifts + Availability backend tests PASSED (29/29) via /app/recurring_shifts_test.py. POST /api/shifts admin: recurring=daily repeat_count=4 → {created:4, series_id, first}, GET ?all=true confirms 4 shifts share the series_id with starts at +0d/+1d/+2d/+3d and occurrence_index [0,1,2,3]; recurring=weekly repeat_count=3 → {created:3, series_id} with +0d/+7d/+14d offsets; recurring=none and omitted recurring → {created:1, series_id:null} (repeat_count ignored). Staff POST /api/shifts → 403. POST /api/availability upserts (POST same date with available:true overwrites earlier false; only one record persists). GET /api/availability scoped to caller; admin ?all=true returns both admin + staff records, while staff ?all=true is still limited to own. All 9 created shifts cleaned up via DELETE /api/shifts/{id}. Both 'Recurring shifts' and a new 'Availability endpoints' task marked working: true."
+    - agent: "testing"
+      message: "Admin-features backend regression PASSED 26/26 via /app/admin_features_test.py against the public proxy URL. Tasks marked working: 'Holiday entitlement editor (admin)', 'Per-user availability filter on shift modal + tap-to-edit shift' (backend portion), 'Real Push notifications via Expo Push API' (backend wiring). Highlights: (1) PATCH /api/users/{id}/entitlement validates 0–365 (rejects -5 and 400 with 400), enforces admin (403 for staff), 404 for non-existent, and /api/holidays/balance reflects the new entitlement on next call (verified entitlement=30 then restored to 25). (2) PATCH /api/shifts/{sid} (admin only) updates title/start/end/location with user_id/user_name unchanged, auto-resolves user_name when user_id changes, auto-populates customer_name and site_name from customer_id+site_id (used existing CRM customer Aer Lingus / site Dublin Hangar), 403 for staff, 404 for non-existent shift. (3) POST /api/users/me/push-token accepts ExponentPushToken[...] (200 ok:true and /auth/me reflects the value), rejects garbage with 400 'Invalid Expo push token', empty string clears it (200 then /auth/me shows expo_push_token=null), works for both staff and admin. (4) Smoke with both users having no expo_push_token: create_shift, decide_holiday, and decide_swap all return 200 — notify() is wrapped in try/except and _send_expo_push short-circuits when no valid Exponent tokens are present, so missing/invalid tokens never break the request. No regressions."

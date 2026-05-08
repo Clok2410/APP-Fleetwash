@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { api, setToken, getToken, formatApiError } from "./api";
+import { registerForPushAsync, unregisterPush } from "./push";
 
 export type User = {
   id: string;
@@ -30,6 +31,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       const { data } = await api.get("/auth/me");
       setUser(data);
+      registerForPushAsync().catch(() => {});
     } catch {
       await setToken(null);
       setUser(null);
@@ -45,12 +47,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { data } = await api.post("/auth/login", { email, password });
       await setToken(data.access_token);
       setUser(data.user);
+      registerForPushAsync().catch(() => {});
     } catch (e: any) {
       throw new Error(formatApiError(e.response?.data?.detail) || e.message);
     }
   };
 
   const logout = async () => {
+    try { await unregisterPush(); } catch {}
     await setToken(null);
     setUser(null);
   };

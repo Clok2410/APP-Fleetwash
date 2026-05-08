@@ -68,6 +68,14 @@ export default function AdminScreen() {
   const [sRepeat, setSRepeat] = useState("4");
   const [swaps, setSwaps] = useState<any[]>([]);
   const [availability, setAvailability] = useState<any[]>([]);
+  const [entUser, setEntUser] = useState<any>(null);
+  const [entValue, setEntValue] = useState("25");
+  const [editShift, setEditShift] = useState<any>(null);
+  const [eTitle, setETitle] = useState("");
+  const [eStart, setEStart] = useState("");
+  const [eEnd, setEEnd] = useState("");
+  const [eLoc, setELoc] = useState("");
+  const [eUser, setEUser] = useState("");
 
   const [formModal, setFormModal] = useState(false);
   const [statsTpl, setStatsTpl] = useState<any>(null);
@@ -448,18 +456,40 @@ export default function AdminScreen() {
 
             <Text style={[typography.label, { marginTop: 8 }]}>All Shifts</Text>
             {allShifts.map((s) => (
-              <View key={s.id} style={styles.card}>
+              <TouchableOpacity
+                key={s.id}
+                style={styles.card}
+                testID={`admin-shift-${s.id}`}
+                activeOpacity={0.7}
+                onPress={() => {
+                  setEditShift(s);
+                  setETitle(s.title || "");
+                  setEStart((s.start || "").slice(0, 16));
+                  setEEnd((s.end || "").slice(0, 16));
+                  setELoc(s.location || "");
+                  setEUser(s.user_id || "");
+                }}
+              >
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontWeight: "700", color: colors.primary }}>
                     {s.title}
                     {s.recurring && s.recurring !== "none" ? ` · ${s.recurring}` : ""}
                   </Text>
                   <Text style={typography.small}>{s.user_name} · {s.start?.slice(0, 16)} → {s.end?.slice(11, 16)}</Text>
+                  {s.customer_name ? (
+                    <Text style={[typography.small, { color: colors.brand, marginTop: 2 }]}>
+                      <Feather name="briefcase" size={10} color={colors.brand} /> {s.customer_name}
+                      {s.site_name ? ` · ${s.site_name}` : ""}
+                    </Text>
+                  ) : null}
                 </View>
-                <TouchableOpacity onPress={async () => { await api.delete(`/shifts/${s.id}`); await load(); }}>
-                  <Feather name="trash-2" size={16} color={colors.alert} />
-                </TouchableOpacity>
-              </View>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Feather name="edit-2" size={14} color={colors.primary} />
+                  <TouchableOpacity onPress={async (e) => { e.stopPropagation && e.stopPropagation(); await api.delete(`/shifts/${s.id}`); await load(); }}>
+                    <Feather name="trash-2" size={16} color={colors.alert} />
+                  </TouchableOpacity>
+                </View>
+              </TouchableOpacity>
             ))}
           </>
         )}
@@ -569,7 +599,20 @@ export default function AdminScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontWeight: "700", color: colors.primary }}>{u.name}</Text>
                   <Text style={typography.small}>{u.email} · {u.role}</Text>
+                  <Text style={[typography.small, { marginTop: 2 }]}>
+                    Holiday entitlement: {u.holiday_entitlement ?? 25} days
+                  </Text>
                 </View>
+                <TouchableOpacity
+                  testID={`edit-entitlement-${u.id}`}
+                  style={[styles.smBtn, { backgroundColor: colors.brand }]}
+                  onPress={() => {
+                    setEntUser(u);
+                    setEntValue(String(u.holiday_entitlement ?? 25));
+                  }}
+                >
+                  <Feather name="calendar" size={14} color="#fff" />
+                </TouchableOpacity>
               </View>
             ))}
           </>
@@ -770,11 +813,34 @@ export default function AdminScreen() {
           <View style={styles.modalCard}>
             <Text style={typography.h3}>Assign Shift</Text>
             <ScrollView style={{ maxHeight: 140, marginTop: 8 }}>
-              {users.filter((u) => u.role === "staff").map((u) => (
-                <TouchableOpacity key={u.id} style={[styles.userRow, sUser === u.id && styles.userRowActive]} onPress={() => setSUser(u.id)}>
-                  <Text>{u.name}</Text>
-                </TouchableOpacity>
-              ))}
+              {users.filter((u) => u.role === "staff").map((u) => {
+                const dateOnly = (sStart || "").slice(0, 10);
+                const unavailable = !!availability.find(
+                  (a) => a.user_id === u.id && a.date === dateOnly && a.available === false
+                );
+                return (
+                  <TouchableOpacity
+                    key={u.id}
+                    style={[
+                      styles.userRow,
+                      sUser === u.id && styles.userRowActive,
+                      unavailable && { opacity: 0.6, backgroundColor: "#FEF3C7" },
+                    ]}
+                    onPress={() => setSUser(u.id)}
+                    testID={`shift-pick-user-${u.id}`}
+                  >
+                    <Text style={{ flex: 1 }}>{u.name}</Text>
+                    {unavailable ? (
+                      <View style={{ flexDirection: "row", alignItems: "center" }}>
+                        <Feather name="alert-triangle" size={12} color="#92400E" />
+                        <Text style={{ marginLeft: 4, color: "#92400E", fontSize: 11, fontWeight: "700" }}>
+                          Unavailable
+                        </Text>
+                      </View>
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
             <TextInput style={styles.input} placeholder="Title" value={sTitle} onChangeText={setSTitle} placeholderTextColor={colors.textMuted} />
             <TextInput style={styles.input} placeholder="Start (YYYY-MM-DDTHH:MM)" value={sStart} onChangeText={setSStart} placeholderTextColor={colors.textMuted} />
@@ -956,9 +1022,123 @@ export default function AdminScreen() {
         </View>
       </Modal>
 
-      {/* PDF Upload Modal */}
-      <Modal visible={pdfModalOpen} animationType="slide" transparent onRequestClose={() => setPdfModalOpen(false)}>
+      {/* Entitlement Editor */}
+      <Modal visible={!!entUser} animationType="fade" transparent onRequestClose={() => setEntUser(null)}>
         <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={typography.h3}>Holiday Entitlement</Text>
+            {entUser ? (
+              <Text style={[typography.small, { marginTop: 4 }]}>
+                {entUser.name} · {entUser.email}
+              </Text>
+            ) : null}
+            <TextInput
+              testID="entitlement-input"
+              style={styles.input}
+              value={entValue}
+              onChangeText={setEntValue}
+              keyboardType="numeric"
+              placeholder="Days (0-365)"
+              placeholderTextColor={colors.textMuted}
+            />
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: colors.surface }]} onPress={() => setEntUser(null)}>
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="entitlement-save"
+                style={[styles.modalBtn, { backgroundColor: colors.primary }]}
+                onPress={async () => {
+                  const v = Math.max(0, Math.min(365, parseInt(entValue || "0", 10) || 0));
+                  try {
+                    await api.patch(`/users/${entUser.id}/entitlement`, null, { params: { value: v } });
+                    setEntUser(null);
+                    await load();
+                  } catch (e: any) {
+                    Alert.alert("Error", e.response?.data?.detail || "Failed");
+                  }
+                }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Edit Shift Modal (tap-to-edit) */}
+      <Modal visible={!!editShift} animationType="slide" transparent onRequestClose={() => setEditShift(null)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={typography.h3}>Edit Shift</Text>
+            <ScrollView style={{ maxHeight: 140, marginTop: 8 }}>
+              {users.filter((u) => u.role === "staff").map((u) => {
+                const dateOnly = (eStart || "").slice(0, 10);
+                const unavailable = !!availability.find(
+                  (a) => a.user_id === u.id && a.date === dateOnly && a.available === false
+                );
+                return (
+                  <TouchableOpacity
+                    key={u.id}
+                    style={[
+                      styles.userRow,
+                      eUser === u.id && styles.userRowActive,
+                      unavailable && { opacity: 0.6, backgroundColor: "#FEF3C7" },
+                    ]}
+                    onPress={() => setEUser(u.id)}
+                  >
+                    <Text style={{ flex: 1 }}>{u.name}</Text>
+                    {unavailable ? (
+                      <View style={{ flexDirection: "row", alignItems: "center" }}>
+                        <Feather name="alert-triangle" size={12} color="#92400E" />
+                        <Text style={{ marginLeft: 4, color: "#92400E", fontSize: 11, fontWeight: "700" }}>
+                          Unavailable
+                        </Text>
+                      </View>
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <TextInput style={styles.input} placeholder="Title" value={eTitle} onChangeText={setETitle} placeholderTextColor={colors.textMuted} />
+            <TextInput style={styles.input} placeholder="Start (YYYY-MM-DDTHH:MM)" value={eStart} onChangeText={setEStart} placeholderTextColor={colors.textMuted} />
+            <TextInput style={styles.input} placeholder="End (YYYY-MM-DDTHH:MM)" value={eEnd} onChangeText={setEEnd} placeholderTextColor={colors.textMuted} />
+            <TextInput style={styles.input} placeholder="Location" value={eLoc} onChangeText={setELoc} placeholderTextColor={colors.textMuted} />
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: colors.surface }]} onPress={() => setEditShift(null)}>
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="edit-shift-save"
+                style={[styles.modalBtn, { backgroundColor: colors.primary }]}
+                onPress={async () => {
+                  if (!editShift || !eUser || !eTitle || !eStart || !eEnd) {
+                    return Alert.alert("Missing info");
+                  }
+                  try {
+                    await api.patch(`/shifts/${editShift.id}`, {
+                      user_id: eUser,
+                      title: eTitle,
+                      start: eStart,
+                      end: eEnd,
+                      location: eLoc,
+                    });
+                    setEditShift(null);
+                    await load();
+                  } catch (e: any) {
+                    Alert.alert("Error", e.response?.data?.detail || "Failed");
+                  }
+                }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* PDF Upload Modal */}
+      <Modal visible={pdfModalOpen} animationType="slide" transparent onRequestClose={() => setPdfModalOpen(false)}>        <View style={styles.modalBg}>
           <View style={styles.modalCard}>
             <Text style={typography.h3}>Upload PDF Form</Text>
             <Text style={[typography.small, { marginTop: 4 }]}>

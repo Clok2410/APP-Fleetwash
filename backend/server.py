@@ -302,6 +302,16 @@ async def deactivate_user(user_id: str, _=Depends(require_admin)):
     return {"ok": True}
 
 
+@api.patch("/users/{user_id}/entitlement")
+async def update_entitlement(user_id: str, value: int, _=Depends(require_admin)):
+    if value < 0 or value > 365:
+        raise HTTPException(status_code=400, detail="Entitlement must be 0–365 days")
+    res = await db.users.update_one({"id": user_id}, {"$set": {"holiday_entitlement": int(value)}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True, "holiday_entitlement": int(value)}
+
+
 # ----------------- Clock In/Out -----------------
 @api.get("/clock/status")
 async def clock_status(current=Depends(get_current_user)):
@@ -503,6 +513,18 @@ async def decide_holiday(rid: str, decision: str, _=Depends(require_admin)):
     res = await db.holiday_requests.update_one({"id": rid}, {"$set": {"status": decision, "decided_at": now_utc()}})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Request not found")
+    h = await db.holiday_requests.find_one({"id": rid})
+    if h:
+        try:
+            await notify(
+                h["user_id"],
+                f"Holiday {decision}",
+                f"{h.get('start_date','')} → {h.get('end_date','')}",
+                "holiday",
+                rid,
+            )
+        except Exception:
+            pass
     return {"ok": True}
 
 
@@ -560,6 +582,18 @@ async def create_shift(body: ShiftIn, _=Depends(require_admin)):
         })
     if inserts:
         await db.shifts.insert_many(inserts)
+        try:
+            first = inserts[0]
+            count = len(inserts)
+            await notify(
+                body.user_id,
+                "New shift assigned",
+                f"{body.title} · {first['start'][:16]}" + (f" · +{count - 1} more" if count > 1 else ""),
+                "shift",
+                first["id"],
+            )
+        except Exception:
+            pass
     return {"created": len(inserts), "series_id": series_id, "first": serialize(inserts[0]) if inserts else None}
 
 
@@ -576,6 +610,48 @@ async def list_shifts(current=Depends(get_current_user), all: bool = False):
 async def delete_shift(sid: str, _=Depends(require_admin)):
     await db.shifts.delete_one({"id": sid})
     return {"ok": True}
+
+
+@api.patch("/shifts/{sid}")
+async def update_shift(sid: str, body: ShiftIn, _=Depends(require_admin)):
+    shift = await db.shifts.find_one({"id": sid})
+    if not shift:
+        raise HTTPException(status_code=404, detail="Shift not found")
+    user = await db.users.find_one({"id": body.user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="Assignee not found")
+    update: Dict[str, Any] = {
+        "user_id": body.user_id,
+        "user_name": user["name"],
+        "title": body.title,
+        "start": body.start,
+        "end": body.end,
+        "location": body.location,
+        "notes": body.notes,
+    }
+    if body.customer_id is not None:
+        update["customer_id"] = body.customer_id or None
+        if body.customer_id:
+            c = await db.customers.find_one({"id": body.customer_id})
+            update["customer_name"] = c["name"] if c else None
+            if body.site_id and c:
+                site = next((s for s in c.get("sites", []) if s["id"] == body.site_id), None)
+                update["site_id"] = body.site_id
+                update["site_name"] = site["name"] if site else None
+            else:
+                update["site_id"] = None
+                update["site_name"] = None
+        else:
+            update["customer_name"] = None
+            update["site_id"] = None
+            update["site_name"] = None
+    await db.shifts.update_one({"id": sid}, {"$set": update})
+    new_doc = await db.shifts.find_one({"id": sid})
+    try:
+        await notify(body.user_id, "Shift updated", f"{body.title} · {body.start[:16]}", "shift")
+    except Exception:
+        pass
+    return serialize(new_doc)
 
 
 @api.post("/shifts/{sid}/swap")
@@ -626,6 +702,12 @@ async def decide_swap(sid: str, decision: str, _=Depends(require_admin)):
             {"id": swap["shift_id"]},
             {"$set": {"user_id": swap["to_user_id"], "user_name": target["name"]}},
         )
+    # Notify both parties
+    try:
+        await notify(swap["from_user_id"], f"Swap {decision}", f"with {swap['to_user_name']}", "swap", sid)
+        await notify(swap["to_user_id"], f"Swap {decision}", f"with {swap['from_user_name']}", "swap", sid)
+    except Exception:
+        pass
     return {"ok": True}
 
 
@@ -1029,6 +1111,7 @@ async def checklist_alerts(_=Depends(require_admin)):
 async def create_admin_notifications(kind: str, title: str, body: str, related_id: Optional[str] = None):
     admins = await db.users.find({"role": "admin", "active": {"$ne": False}}).to_list(500)
     docs = []
+    push_targets: List[str] = []
     for a in admins:
         docs.append({
             "id": str(uuid.uuid4()),
@@ -1040,8 +1123,76 @@ async def create_admin_notifications(kind: str, title: str, body: str, related_i
             "read": False,
             "created_at": now_utc(),
         })
+        tok = a.get("expo_push_token")
+        if tok:
+            push_targets.append(tok)
     if docs:
         await db.notifications.insert_many(docs)
+    if push_targets:
+        await _send_expo_push(push_targets, title, body, {"kind": kind, "related_id": related_id})
+
+
+async def notify(user_id: str, title: str, body: str, kind: str = "info", related_id: Optional[str] = None):
+    """In-app notification + Expo push (best-effort) for a single user."""
+    user = await db.users.find_one({"id": user_id})
+    if not user:
+        return
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "kind": kind,
+        "title": title,
+        "body": body,
+        "related_id": related_id,
+        "read": False,
+        "created_at": now_utc(),
+    })
+    tok = user.get("expo_push_token")
+    if tok:
+        await _send_expo_push([tok], title, body, {"kind": kind, "related_id": related_id})
+
+
+async def _send_expo_push(tokens: List[str], title: str, body: str, data: Optional[Dict[str, Any]] = None):
+    """Send a push via Expo's push service. Best-effort; logs but never raises."""
+    import httpx
+    valid = [t for t in tokens if isinstance(t, str) and t.startswith(("ExponentPushToken[", "ExpoPushToken["))]
+    if not valid:
+        return
+    payloads = [
+        {
+            "to": t,
+            "title": title,
+            "body": body,
+            "sound": "default",
+            "data": data or {},
+            "priority": "high",
+        }
+        for t in valid
+    ]
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.post(
+                "https://exp.host/--/api/v2/push/send",
+                json=payloads,
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+            )
+            if r.status_code >= 400:
+                logger.warning("Expo push non-2xx: %s %s", r.status_code, r.text[:300])
+    except Exception as e:
+        logger.warning("Expo push failed: %s", e)
+
+
+class PushTokenIn(BaseModel):
+    token: str
+
+
+@api.post("/users/me/push-token")
+async def save_push_token(body: PushTokenIn, current=Depends(get_current_user)):
+    tok = (body.token or "").strip()
+    if tok and not tok.startswith(("ExponentPushToken[", "ExpoPushToken[")):
+        raise HTTPException(status_code=400, detail="Invalid Expo push token")
+    await db.users.update_one({"id": current["id"]}, {"$set": {"expo_push_token": tok or None}})
+    return {"ok": True}
 
 
 @api.get("/notifications")
