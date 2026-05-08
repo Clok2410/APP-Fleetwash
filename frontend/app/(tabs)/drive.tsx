@@ -18,6 +18,8 @@ import * as FileSystem from "expo-file-system";
 import { api } from "../../src/api";
 import { useAuth } from "../../src/auth";
 import { colors, spacing, radius, typography } from "../../src/theme";
+import { readAssetAsBase64 } from "../../src/utils/fileToBase64";
+import WebDropZone from "../../src/components/WebDropZone";
 
 export default function DriveScreen() {
   const { user } = useAuth();
@@ -65,17 +67,22 @@ export default function DriveScreen() {
 
   const uploadFile = async () => {
     try {
-      const res = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true });
+      const res = await DocumentPicker.getDocumentAsync({
+        type: "*/*",
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
       if (res.canceled) return;
-      const asset = res.assets[0];
-      // Read base64 with size limit ~5MB
-      if ((asset.size || 0) > 6 * 1024 * 1024) {
-        Alert.alert("Too large", "Max 5MB per file");
+      const asset: any = res.assets[0];
+      if ((asset.size || 0) > 10 * 1024 * 1024) {
+        Alert.alert("Too large", "Max 10MB per file");
         return;
       }
-      const b64 = await FileSystem.readAsStringAsync(asset.uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      const b64 = await readAssetAsBase64(asset, FileSystem);
+      if (!b64) {
+        Alert.alert("Upload failed", "Could not read file. Try a different file.");
+        return;
+      }
       await api.post("/drive/files", {
         name: asset.name,
         folder_id: currentFolder.id,
@@ -86,7 +93,32 @@ export default function DriveScreen() {
       await load();
       Alert.alert("Uploaded", asset.name);
     } catch (e: any) {
-      Alert.alert("Upload failed", e.message);
+      Alert.alert("Upload failed", e.response?.data?.detail || e.message);
+    }
+  };
+
+  const uploadDroppedFile = async (file: File) => {
+    try {
+      if ((file.size || 0) > 10 * 1024 * 1024) {
+        Alert.alert("Too large", "Max 10MB per file");
+        return;
+      }
+      const b64 = await readAssetAsBase64({ file, uri: "" }, FileSystem);
+      if (!b64) {
+        Alert.alert("Upload failed", "Could not read file.");
+        return;
+      }
+      await api.post("/drive/files", {
+        name: file.name,
+        folder_id: currentFolder.id,
+        mime_type: file.type || "application/octet-stream",
+        data_base64: b64,
+        size: file.size,
+      });
+      await load();
+      Alert.alert("Uploaded", file.name);
+    } catch (e: any) {
+      Alert.alert("Upload failed", e.response?.data?.detail || e.message);
     }
   };
 
@@ -148,6 +180,18 @@ export default function DriveScreen() {
           />
         }
       >
+        <WebDropZone
+          onFile={uploadDroppedFile}
+          style={{ marginBottom: 12, paddingVertical: 16 } as any}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+            <Feather name="upload-cloud" size={16} color={colors.primary} />
+            <Text style={[typography.small, { marginLeft: 8, color: colors.primary, fontWeight: "600" }]}>
+              Drag &amp; drop a file here, or use the upload button
+            </Text>
+          </View>
+        </WebDropZone>
+
         {folders.length === 0 && files.length === 0 && (
           <View style={styles.empty}>
             <Feather name="folder" size={28} color={colors.textMuted} />

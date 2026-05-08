@@ -21,6 +21,7 @@ import StatsModal from "../src/components/StatsModal";
 import OffsiteMap from "../src/components/OffsiteMap";
 import CustomerModal from "../src/components/CustomerModal";
 import WebDropZone from "../src/components/WebDropZone";
+import { readAssetAsBase64 } from "../src/utils/fileToBase64";
 import { Calendar } from "react-native-calendars";
 
 export default function AdminScreen() {
@@ -1221,48 +1222,6 @@ function formatBytesAdmin(n: number) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-async function readAssetAsBase64(file: any, FileSystem: any): Promise<string> {
-  // 1) Already provided
-  if (file?.base64) return file.base64;
-  // 2) Web returns a File object on `.file`
-  if (Platform.OS === "web") {
-    if (file?.file) {
-      try {
-        const ab = await file.file.arrayBuffer();
-        const bytes = new Uint8Array(ab);
-        let binary = "";
-        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-        return btoa(binary);
-      } catch {}
-    }
-    // 3) data URL fallback
-    if (typeof file?.uri === "string" && file.uri.startsWith("data:")) {
-      const idx = file.uri.indexOf(",");
-      if (idx >= 0) return file.uri.slice(idx + 1);
-    }
-    // 4) blob URL — fetch it
-    if (typeof file?.uri === "string" && file.uri.startsWith("blob:")) {
-      try {
-        const r = await fetch(file.uri);
-        const blob = await r.blob();
-        const ab = await blob.arrayBuffer();
-        const bytes = new Uint8Array(ab);
-        let binary = "";
-        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-        return btoa(binary);
-      } catch {}
-    }
-  }
-  // 5) Native: use FileSystem
-  try {
-    return await FileSystem.readAsStringAsync(file.uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-  } catch {
-    return "";
-  }
 }
 
 const styles = StyleSheet.create({
