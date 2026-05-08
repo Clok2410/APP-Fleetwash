@@ -9,6 +9,7 @@ import {
   Modal,
   TextInput,
   RefreshControl,
+  Platform,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { Feather } from "@expo/vector-icons";
@@ -20,6 +21,7 @@ import { useAuth } from "../../src/auth";
 import { colors, spacing, radius, typography } from "../../src/theme";
 import { readAssetAsBase64 } from "../../src/utils/fileToBase64";
 import WebDropZone from "../../src/components/WebDropZone";
+import PdfFormFillModal from "../../src/components/PdfFormFillModal";
 
 export default function DriveScreen() {
   const { user } = useAuth();
@@ -30,6 +32,8 @@ export default function DriveScreen() {
   const [newFolder, setNewFolder] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [previewFile, setPreviewFile] = useState<any>(null);
+  const [activeFillSession, setActiveFillSession] = useState<string | null>(null);
+  const [fillBusy, setFillBusy] = useState(false);
 
   const currentFolder = stack[stack.length - 1];
 
@@ -119,6 +123,39 @@ export default function DriveScreen() {
       Alert.alert("Uploaded", file.name);
     } catch (e: any) {
       Alert.alert("Upload failed", e.response?.data?.detail || e.message);
+    }
+  };
+
+  const fillPdfFromDrive = async (driveFile: any) => {
+    if (fillBusy) return;
+    setFillBusy(true);
+    try {
+      // 1) Promote/reuse this drive file as a PDF Form template
+      const { data: tpl } = await api.post(`/drive/files/${driveFile.id}/as-pdf-form`);
+      if (!tpl?.has_acroform) {
+        Alert.alert(
+          "No fillable fields",
+          "This PDF doesn't have any AcroForm fields. You can still preview / download it.",
+        );
+        return;
+      }
+      // 2) Reuse existing draft session if any (collab), else create new
+      const { data: sessions } = await api.get(`/pdf-forms/sessions`, {
+        params: { template_id: tpl.id, status: "draft" },
+      });
+      let sess = (sessions || [])[0];
+      if (!sess) {
+        const { data } = await api.post(`/pdf-forms/templates/${tpl.id}/sessions`, {
+          name: driveFile.name?.replace(/\.pdf$/i, "") || "Form",
+        });
+        sess = data;
+      }
+      setPreviewFile(null);
+      setActiveFillSession(sess.id);
+    } catch (e: any) {
+      Alert.alert("Could not open form", e.response?.data?.detail || e.message);
+    } finally {
+      setFillBusy(false);
     }
   };
 
@@ -212,22 +249,38 @@ export default function DriveScreen() {
             <Feather name="chevron-right" size={18} color={colors.textMuted} />
           </TouchableOpacity>
         ))}
-        {files.map((f) => (
-          <TouchableOpacity key={f.id} style={styles.row} onPress={() => showPreview(f)} testID={`file-${f.id}`}>
-            <View style={[styles.iconWrap, { backgroundColor: colors.surface }]}>
-              <Feather name="file" size={18} color={colors.primary} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>{f.name}</Text>
-              <Text style={typography.small}>
-                {(f.size / 1024).toFixed(1)} KB · {f.owner_name}
-              </Text>
-            </View>
-            <TouchableOpacity onPress={() => deleteFile(f.id)} style={{ padding: 6 }}>
-              <Feather name="trash-2" size={16} color={colors.alert} />
+        {files.map((f) => {
+          const isPdf = (f.mime_type || "").includes("pdf") || (f.name || "").toLowerCase().endsWith(".pdf");
+          return (
+            <TouchableOpacity key={f.id} style={styles.row} onPress={() => showPreview(f)} testID={`file-${f.id}`}>
+              <View style={[styles.iconWrap, { backgroundColor: isPdf ? "#FEE2E2" : colors.surface }]}>
+                <Feather name={isPdf ? "file-text" : "file"} size={18} color={isPdf ? "#B91C1C" : colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle}>{f.name}</Text>
+                <Text style={typography.small}>
+                  {(f.size / 1024).toFixed(1)} KB · {f.owner_name}
+                </Text>
+              </View>
+              {isPdf ? (
+                <TouchableOpacity
+                  testID={`fill-${f.id}`}
+                  style={styles.fillBtn}
+                  onPress={(e: any) => {
+                    if (e?.stopPropagation) e.stopPropagation();
+                    fillPdfFromDrive(f);
+                  }}
+                >
+                  <Feather name="edit-3" size={12} color="#fff" />
+                  <Text style={styles.fillBtnText}>Fill</Text>
+                </TouchableOpacity>
+              ) : null}
+              <TouchableOpacity onPress={() => deleteFile(f.id)} style={{ padding: 6 }}>
+                <Feather name="trash-2" size={16} color={colors.alert} />
+              </TouchableOpacity>
             </TouchableOpacity>
-          </TouchableOpacity>
-        ))}
+          );
+        })}
       </ScrollView>
 
       <Modal visible={newFolder} animationType="slide" transparent onRequestClose={() => setNewFolder(false)}>
@@ -271,7 +324,38 @@ export default function DriveScreen() {
             <Text style={{ color: "#9ca3af", marginBottom: 16 }}>
               Size: {((previewFile?.size || 0) / 1024).toFixed(1)} KB
             </Text>
-            {previewFile?.mime_type?.startsWith("image/") && previewFile?.data_base64 ? (
+            {(previewFile?.mime_type?.includes("pdf") || (previewFile?.name || "").toLowerCase().endsWith(".pdf")) ? (
+              <>
+                <TouchableOpacity
+                  testID="preview-fill-btn"
+                  style={[styles.btn, { backgroundColor: colors.success, marginBottom: 12, flexDirection: "row", justifyContent: "center" }]}
+                  onPress={() => fillPdfFromDrive(previewFile)}
+                  disabled={fillBusy}
+                >
+                  <Feather name="edit-3" size={16} color="#fff" />
+                  <Text style={[styles.btnPrimaryText, { marginLeft: 8 }]}>
+                    {fillBusy ? "Opening…" : "Fill as Form"}
+                  </Text>
+                </TouchableOpacity>
+                {Platform.OS === "web" && previewFile?.data_base64 ? (
+                  <View style={{ height: 480, backgroundColor: "#fff", borderRadius: 8, overflow: "hidden" }}>
+                    {/* @ts-ignore web-only iframe */}
+                    <iframe
+                      src={`data:application/pdf;base64,${previewFile.data_base64}`}
+                      style={{ width: "100%", height: "100%", border: 0 }}
+                      title={previewFile.name}
+                    />
+                  </View>
+                ) : (
+                  <View style={styles.imgWrap}>
+                    <Feather name="file-text" size={48} color="#fff" />
+                    <Text style={{ color: "#fff", marginTop: 12 }}>
+                      Tap "Fill as Form" to open and complete this PDF.
+                    </Text>
+                  </View>
+                )}
+              </>
+            ) : previewFile?.mime_type?.startsWith("image/") && previewFile?.data_base64 ? (
               <View style={styles.imgWrap}>
                 <Text style={{ color: "#fff" }}>
                   📎 Image previewed in-app. Use Save to share.
@@ -288,12 +372,32 @@ export default function DriveScreen() {
           </ScrollView>
         </SafeAreaView>
       </Modal>
+
+      <PdfFormFillModal
+        templateId={null}
+        sessionId={activeFillSession}
+        isAdmin={user?.role === "admin"}
+        onClose={async () => {
+          setActiveFillSession(null);
+          await load();
+        }}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
+  fillBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.success,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    marginRight: 6,
+  },
+  fillBtnText: { color: "#fff", fontWeight: "700", fontSize: 11, marginLeft: 4 },
   header: {
     padding: spacing.lg,
     flexDirection: "row",

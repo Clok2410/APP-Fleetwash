@@ -43,8 +43,10 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
   const [submission, setSubmission] = useState<any>(null);
   const [flatten, setFlatten] = useState(true);
   const [savingDraft, setSavingDraft] = useState<"idle" | "saving" | "saved">("idle");
+  const [previewBase64, setPreviewBase64] = useState<string>("");
   const lastSavedRef = useRef<string>("");
   const saveTimerRef = useRef<any>(null);
+  const previewBlobUrlRef = useRef<string>("");
   const visible = !!templateId || !!sessionId;
   const inSession = !!sessionId;
   const locked = inSession && session?.status === "completed";
@@ -107,6 +109,8 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
         await api.patch(`/pdf-forms/sessions/${session.id}`, { values });
         lastSavedRef.current = snapshot;
         setSavingDraft("saved");
+        // Refresh live preview
+        refreshPreview();
         setTimeout(() => setSavingDraft("idle"), 1500);
       } catch (e: any) {
         setSavingDraft("idle");
@@ -117,6 +121,23 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [values, inSession, canEdit]);
+
+  const refreshPreview = async () => {
+    if (Platform.OS !== "web") return;
+    if (!session) return;
+    try {
+      const { data } = await api.get(`/pdf-forms/sessions/${session.id}/pdf`);
+      if (data?.pdf_base64) setPreviewBase64(data.pdf_base64);
+    } catch {}
+  };
+
+  // Initial preview load when session arrives
+  useEffect(() => {
+    if (Platform.OS === "web" && inSession && session) {
+      refreshPreview();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id]);
 
   const fields: PdfField[] = useMemo(() => tpl?.fields || [], [tpl]);
 
@@ -256,7 +277,18 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
           </View>
         ) : tpl ? (
           <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 40 }}>
-            {tpl.description ? (
+            {Platform.OS === "web" && inSession && previewBase64 ? (
+              <View style={{ height: 420, marginBottom: spacing.md, borderRadius: radius.md, overflow: "hidden", backgroundColor: "#0F172A" }}>
+                {/* @ts-ignore web-only iframe */}
+                <iframe
+                  key={previewBase64.length}
+                  src={`data:application/pdf;base64,${previewBase64}`}
+                  style={{ width: "100%", height: "100%", border: 0, background: "#fff" }}
+                  title={tpl?.title || "Preview"}
+                />
+              </View>
+            ) : null}
+            {tpl?.description ? (
               <Text style={[typography.body, { marginBottom: spacing.md }]}>{tpl.description}</Text>
             ) : null}
 

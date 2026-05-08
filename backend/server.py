@@ -1965,6 +1965,58 @@ async def delete_pdf_session(sid: str, _=Depends(require_admin)):
     return {"ok": True}
 
 
+# ----------------- Drive ↔ PDF Form bridge -----------------
+@api.post("/drive/files/{fid}/as-pdf-form")
+async def drive_file_as_pdf_form(fid: str, current=Depends(get_current_user)):
+    """Promote (or reuse) a Drive PDF as a PDF Fillable Form template, then return template metadata."""
+    drive_file = await db.files.find_one({"id": fid})
+    if not drive_file:
+        raise HTTPException(status_code=404, detail="Drive file not found")
+    mime = (drive_file.get("mime_type") or "").lower()
+    name = drive_file.get("name") or "form.pdf"
+    pdf_b64 = drive_file.get("data_base64")
+    if not pdf_b64:
+        raise HTTPException(status_code=400, detail="File has no data")
+    is_pdf = "pdf" in mime or name.lower().endswith(".pdf")
+    if not is_pdf:
+        raise HTTPException(status_code=400, detail="Not a PDF file")
+
+    # Reuse existing template if already promoted
+    existing = await db.pdf_form_templates.find_one({"source_drive_file_id": fid})
+    if existing:
+        res = serialize(existing).copy()
+        res.pop("pdf_base64", None)
+        return res
+
+    import base64
+    try:
+        pdf_bytes = base64.b64decode(pdf_b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not decode PDF")
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Stored file is not a valid PDF")
+
+    fields = _extract_pdf_fields(pdf_bytes)
+    tmpl = {
+        "id": str(uuid.uuid4()),
+        "title": name.replace(".pdf", "").replace(".PDF", "")[:120] or "Drive form",
+        "description": f"From Drive · {drive_file.get('owner_name','')}",
+        "pdf_base64": pdf_b64,
+        "fields": fields,
+        "has_acroform": len(fields) > 0,
+        "field_count": len(fields),
+        "size_bytes": len(pdf_bytes),
+        "source_drive_file_id": fid,
+        "created_by": current["id"],
+        "created_by_name": current.get("name"),
+        "created_at": now_utc(),
+    }
+    await db.pdf_form_templates.insert_one(tmpl)
+    res = serialize(tmpl).copy()
+    res.pop("pdf_base64", None)
+    return res
+
+
 # ----------------- Startup -----------------
 @app.on_event("startup")
 async def on_startup():
