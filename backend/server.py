@@ -1166,6 +1166,74 @@ async def notify(user_id: str, title: str, body: str, kind: str = "info", relate
         await _send_expo_push([tok], title, body, {"kind": kind, "related_id": related_id})
 
 
+def _send_smtp_email(
+    to_emails: List[str],
+    subject: str,
+    body_text: str,
+    attachment_bytes: Optional[bytes] = None,
+    attachment_filename: Optional[str] = None,
+) -> bool:
+    """Send a plain-text email with optional PDF attachment via SMTP. Returns True on send,
+    False on any failure (logged). Never raises."""
+    import smtplib, ssl
+    from email.message import EmailMessage
+
+    host = os.environ.get("SMTP_HOST", "").strip()
+    port = int(os.environ.get("SMTP_PORT", "587") or 587)
+    user = os.environ.get("SMTP_USER", "").strip()
+    pwd = os.environ.get("SMTP_PASS", "").strip()
+    sender = os.environ.get("SMTP_FROM", user).strip()
+    from_name = os.environ.get("SMTP_FROM_NAME", "StaffHub").strip()
+    if not (host and user and pwd and to_emails):
+        logger.warning("SMTP not configured or no recipients — MOCK email to %s: %s", to_emails, subject)
+        return False
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = f"{from_name} <{sender}>" if from_name else sender
+    msg["To"] = ", ".join(to_emails)
+    msg.set_content(body_text)
+    if attachment_bytes and attachment_filename:
+        msg.add_attachment(
+            attachment_bytes,
+            maintype="application",
+            subtype="pdf",
+            filename=attachment_filename,
+        )
+
+    try:
+        ctx = ssl.create_default_context()
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, context=ctx, timeout=15) as s:
+                s.login(user, pwd)
+                s.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as s:
+                s.ehlo()
+                s.starttls(context=ctx)
+                s.ehlo()
+                s.login(user, pwd)
+                s.send_message(msg)
+        logger.info("SMTP sent to %s — subject=%r", to_emails, subject)
+        return True
+    except Exception as e:
+        logger.warning("SMTP send failed to %s: %s", to_emails, e)
+        return False
+
+
+async def _form_recipient_emails() -> List[str]:
+    """Returns admin emails opted-in to receive form submissions. Defaults to all active admins."""
+    admins = await db.users.find({"role": "admin", "active": {"$ne": False}}).to_list(200)
+    out: List[str] = []
+    for a in admins:
+        if a.get("receives_forms") is False:  # explicit opt-out
+            continue
+        em = (a.get("email") or "").strip()
+        if em:
+            out.append(em)
+    return out
+
+
 async def _send_expo_push(tokens: List[str], title: str, body: str, data: Optional[Dict[str, Any]] = None):
     """Send a push via Expo's push service. Best-effort; logs but never raises."""
     import httpx
@@ -1937,7 +2005,41 @@ async def fill_pdf_form(tid: str, body: PdfFormSubmissionIn, current=Depends(get
         "created_at": now_utc(),
     }
     await db.pdf_form_submissions.insert_one(sub)
+    # Email the filled PDF to admin recipients (best-effort)
+    sent_to: List[str] = []
+    try:
+        recipients = await _form_recipient_emails()
+        if recipients:
+            safe = (tmpl.get("title") or "form").replace("/", "_")
+            fname = f"{safe} - {current.get('name','')}.pdf"
+            subj = f"[StaffHub] {tmpl.get('title')} — submitted by {current.get('name','')}"
+            text = (
+                f"{current.get('name','A staff member')} submitted '{tmpl.get('title')}' on "
+                f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}.\n\n"
+                f"The completed PDF is attached.\n"
+            )
+            ok = _send_smtp_email(
+                recipients,
+                subj,
+                text,
+                attachment_bytes=filled,
+                attachment_filename=fname,
+            )
+            if ok:
+                sent_to = recipients
+    except Exception as e:
+        logger.warning("Email submission failed: %s", e)
+    try:
+        await create_admin_notifications(
+            "form_submitted",
+            f"Form submitted: {tmpl.get('title')}",
+            f"{current.get('name','Staff')} completed the form",
+            related_id=sub["id"],
+        )
+    except Exception:
+        pass
     res = serialize(sub).copy()
+    res["emailed_to"] = sent_to
     return res
 
 

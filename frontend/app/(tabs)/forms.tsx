@@ -235,73 +235,29 @@ export default function FormsScreen() {
               {pdfTemplates.length > 0 ? (
                 <Text style={[typography.label, { marginTop: 12 }]}>PDF Fillable Forms</Text>
               ) : null}
-              {pdfTemplates.map((t) => {
-                const tplSessions = pdfSessions.filter((s) => s.template_id === t.id);
-                return (
-                  <View key={t.id}>
-                    <View style={styles.card} testID={`pdf-template-${t.id}`}>
-                      <View style={[styles.iconWrap, { backgroundColor: "#FEE2E2" }]}>
-                        <Feather name="file-text" size={18} color="#B91C1C" />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.cardTitle}>{t.title}</Text>
-                        {t.description ? <Text style={typography.small}>{t.description}</Text> : null}
-                        <Text style={[typography.small, { marginTop: 4 }]}>
-                          {t.has_acroform
-                            ? `${t.field_count} AcroForm fields`
-                            : "No fillable fields detected"}
-                        </Text>
-                      </View>
-                      <TouchableOpacity
-                        testID={`start-session-${t.id}`}
-                        onPress={async () => {
-                          try {
-                            const { data } = await api.post(`/pdf-forms/templates/${t.id}/sessions`, {});
-                            await load();
-                            setActiveSessionId(data.id);
-                          } catch (e: any) {
-                            Alert.alert("Error", e.response?.data?.detail || "Could not start");
-                          }
-                        }}
-                        style={{ paddingHorizontal: 10, paddingVertical: 8, backgroundColor: colors.primary, borderRadius: radius.pill, flexDirection: "row", alignItems: "center" }}
-                      >
-                        <Feather name="plus" size={12} color="#fff" />
-                        <Text style={{ color: "#fff", fontSize: 12, fontWeight: "700", marginLeft: 4 }}>New</Text>
-                      </TouchableOpacity>
-                    </View>
-                    {tplSessions.length > 0 ? (
-                      <View style={{ marginLeft: 28, marginTop: -6, marginBottom: 6 }}>
-                        {tplSessions.map((sess: any) => {
-                          const total = t.field_count || 1;
-                          const filled = Object.values(sess.values || {}).filter((v: any) => v !== "" && v !== false && v != null).length;
-                          const pct = Math.min(100, Math.round((filled / total) * 100));
-                          const locked = sess.status === "completed";
-                          return (
-                            <TouchableOpacity
-                              key={sess.id}
-                              testID={`session-${sess.id}`}
-                              style={[styles.card, { backgroundColor: locked ? "#F1F5F9" : colors.surface }]}
-                              onPress={() => setActiveSessionId(sess.id)}
-                              activeOpacity={0.85}
-                            >
-                              <View style={[styles.iconWrap, { backgroundColor: locked ? "#FECACA" : "#DBEAFE", width: 30, height: 30 }]}>
-                                <Feather name={locked ? "lock" : "edit-2"} size={14} color={locked ? "#B91C1C" : "#1D4ED8"} />
-                              </View>
-                              <View style={{ flex: 1 }}>
-                                <Text style={[styles.cardTitle, { fontSize: 14 }]} numberOfLines={1}>{sess.name}</Text>
-                                <Text style={typography.small}>
-                                  {locked ? `Locked · ${sess.completed_by_name || "admin"}` : `Last by ${sess.last_editor_name || "—"} · ${pct}% filled`}
-                                </Text>
-                              </View>
-                              <Feather name="chevron-right" size={16} color={colors.textMuted} />
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    ) : null}
+              {pdfTemplates.map((t) => (
+                <TouchableOpacity
+                  key={t.id}
+                  style={styles.card}
+                  testID={`pdf-template-${t.id}`}
+                  onPress={() => setActivePdfId(t.id)}
+                  activeOpacity={0.85}
+                >
+                  <View style={[styles.iconWrap, { backgroundColor: "#FEE2E2" }]}>
+                    <Feather name="file-text" size={18} color="#B91C1C" />
                   </View>
-                );
-              })}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle}>{t.title}</Text>
+                    {t.description ? <Text style={typography.small}>{t.description}</Text> : null}
+                    <Text style={[typography.small, { marginTop: 4 }]}>
+                      {t.has_acroform
+                        ? `${t.field_count} fields · submit emails admin`
+                        : "No fillable fields detected"}
+                    </Text>
+                  </View>
+                  <Feather name="chevron-right" size={18} color={colors.textMuted} />
+                </TouchableOpacity>
+              ))}
             </>
           ))}
 

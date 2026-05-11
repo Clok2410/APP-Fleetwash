@@ -286,7 +286,7 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
           </View>
         ) : tpl ? (
           <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 40 }}>
-            {Platform.OS === "web" && inSession && tpl?.pdf_base64 && (tpl.fields || []).some((f: any) => f.rect) ? (
+            {Platform.OS === "web" && tpl?.pdf_base64 && (tpl.fields || []).some((f: any) => f.rect) ? (
               <View style={{ marginBottom: spacing.md }}>
                 {/* @ts-ignore — web-only inline PDF editor */}
                 <PdfInlineEditor
@@ -322,7 +322,7 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
             ) : null}
 
             {/* Field list — fallback editor on native or when no widget rects */}
-            {(Platform.OS !== "web" || !inSession || !(tpl?.fields || []).some((ff: any) => ff.rect)) &&
+            {(Platform.OS !== "web" || !(tpl?.fields || []).some((ff: any) => ff.rect)) &&
               fields.map((f) => (
               <View key={f.name} style={{ marginBottom: spacing.md }}>
                 <Text style={typography.label} numberOfLines={2}>
@@ -430,7 +430,7 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
                 ) : (
                   <>
                     <Feather name="check-circle" size={16} color="#fff" />
-                    <Text style={styles.submitText}>Generate Filled PDF</Text>
+                    <Text style={styles.submitText}>Submit &amp; Email to Admin</Text>
                   </>
                 )}
               </TouchableOpacity>
@@ -439,8 +439,11 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
                 <View style={styles.successCard}>
                   <Feather name="file-text" size={20} color={colors.success} />
                   <Text style={{ marginLeft: 8, color: colors.primary, fontWeight: "700", flex: 1 }}>
-                    Filled PDF ready
+                    Submitted ✓
                     {submission?.size_bytes ? ` · ${formatBytes(submission.size_bytes)}` : ""}
+                    {submission?.emailed_to && submission.emailed_to.length > 0
+                      ? ` · emailed to ${submission.emailed_to.length} admin${submission.emailed_to.length > 1 ? "s" : ""}`
+                      : ""}
                   </Text>
                 </View>
                 <TouchableOpacity
