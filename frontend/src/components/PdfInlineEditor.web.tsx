@@ -31,6 +31,41 @@ function b64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
+// Load pdfjs v3 (UMD) into the page via a classic script tag. v3 UMD exposes
+// `window.pdfjsLib` and doesn't use top-level await, so it works under Metro+browser.
+const PDFJS_VERSION = "3.11.174";
+let pdfjsLoading: Promise<any> | null = null;
+function loadPdfjs(): Promise<any> {
+  if (typeof window === "undefined") return Promise.reject(new Error("no window"));
+  const w = window as any;
+  if (w.pdfjsLib) return Promise.resolve(w.pdfjsLib);
+  if (pdfjsLoading) return pdfjsLoading;
+  pdfjsLoading = new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[data-pdfjs="${PDFJS_VERSION}"]`);
+    if (existing) {
+      existing.addEventListener("load", () => resolve((window as any).pdfjsLib));
+      existing.addEventListener("error", () => reject(new Error("pdfjs load failed")));
+      return;
+    }
+    const s = document.createElement("script");
+    s.src = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.min.js`;
+    s.async = true;
+    s.setAttribute("data-pdfjs", PDFJS_VERSION);
+    s.onload = () => {
+      const lib = (window as any).pdfjsLib;
+      if (!lib) {
+        reject(new Error("pdfjsLib missing after load"));
+        return;
+      }
+      lib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
+      resolve(lib);
+    };
+    s.onerror = () => reject(new Error("pdfjs script error"));
+    document.head.appendChild(s);
+  });
+  return pdfjsLoading;
+}
+
 const SCALE = 1.4; // rendering scale — bigger = sharper but heavier
 
 export default function PdfInlineEditor({ pdfBase64, fields, values, onChange, readOnly }: Props) {
@@ -48,11 +83,8 @@ export default function PdfInlineEditor({ pdfBase64, fields, values, onChange, r
     let cancelled = false;
     (async () => {
       try {
-        // pdfjs-dist is web-only — dynamic import keeps native bundle clean.
-        const pdfjs: any = await import("pdfjs-dist/build/pdf");
-        // Use a CDN worker URL to avoid bundling the worker file ourselves.
-        const versionedWorker = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
-        pdfjs.GlobalWorkerOptions.workerSrc = versionedWorker;
+        // Load pdfjs via classic script tag (UMD v3) to avoid Metro/top-level-await issues.
+        const pdfjs: any = await loadPdfjs();
 
         const loadingTask = pdfjs.getDocument({ data: bytes });
         const pdf = await loadingTask.promise;

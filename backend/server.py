@@ -1632,8 +1632,44 @@ def _extract_pdf_fields(pdf_bytes: bytes) -> List[Dict[str, Any]]:
             w, h = 612.0, 792.0
         page_meta.append({"index": i, "width": w, "height": h})
 
-    # Map widget annotation id (object id) -> (page_index, rect)
+    # Map widget annotation -> (page_index, rect, full_field_name)
+    # Field name often lives on the parent field, not the widget annot itself.
     widget_to_page: Dict[str, Dict[str, Any]] = {}
+
+    def _full_name(obj) -> Optional[str]:
+        """Walk /Parent chain joining /T values to build qualified field name."""
+        parts: List[str] = []
+        seen = set()
+        cur = obj
+        for _ in range(10):  # safety bound
+            if cur is None:
+                break
+            try:
+                key = id(cur)
+            except Exception:
+                key = None
+            if key in seen:
+                break
+            seen.add(key)
+            t = None
+            try:
+                t = cur.get("/T")
+            except Exception:
+                t = None
+            if t is not None:
+                parts.append(str(t))
+            try:
+                parent = cur.get("/Parent")
+                if parent is None:
+                    break
+                cur = parent.get_object() if hasattr(parent, "get_object") else parent
+            except Exception:
+                break
+        if not parts:
+            return None
+        parts.reverse()
+        return ".".join(p for p in parts if p)
+
     try:
         for pidx, page in enumerate(reader.pages):
             annots = page.get("/Annots")
@@ -1648,18 +1684,26 @@ def _extract_pdf_fields(pdf_bytes: bytes) -> List[Dict[str, Any]]:
                     if not rect:
                         continue
                     r = [float(x) for x in rect]
-                    # Try to derive a unique key for this widget. pypdf doesn't always expose
-                    # indirect object id easily; use /T (field partial name) plus rect.
-                    t = annot.get("/T")
-                    if t is not None:
-                        key = f"{t}@{pidx}@{round(r[0],1)}_{round(r[1],1)}"
-                        widget_to_page[key] = {
-                            "page": pidx,
-                            "rect": r,
-                            "page_width": page_meta[pidx]["width"],
-                            "page_height": page_meta[pidx]["height"],
-                            "name": str(t),
-                        }
+                    name = _full_name(annot)
+                    if not name or name not in raw_fields:
+                        # Try short partial name fallback
+                        try:
+                            t = annot.get("/T")
+                            if t and str(t) in raw_fields:
+                                name = str(t)
+                        except Exception:
+                            pass
+                    if not name or name not in raw_fields:
+                        continue
+                    # Unique key per widget so multi-widget fields get all positions
+                    key = f"{name}@{pidx}@{round(r[0],1)}_{round(r[1],1)}"
+                    widget_to_page[key] = {
+                        "page": pidx,
+                        "rect": r,
+                        "page_width": page_meta[pidx]["width"],
+                        "page_height": page_meta[pidx]["height"],
+                        "name": name,
+                    }
                 except Exception:
                     continue
     except Exception:

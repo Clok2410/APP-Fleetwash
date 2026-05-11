@@ -73,6 +73,14 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
           setSession(s);
           const { data: t } = await api.get(`/pdf-forms/templates/${s.template_id}`);
           setTpl(t);
+          // eslint-disable-next-line no-console
+          console.log("[PdfForm] tpl loaded:", {
+            id: t?.id,
+            fieldCount: (t?.fields || []).length,
+            withRect: (t?.fields || []).filter((f: any) => f.rect).length,
+            pdfSize: (t?.pdf_base64 || "").length,
+            firstField: t?.fields?.[0],
+          });
           const init: Record<string, any> = {};
           (t.fields || []).forEach((f: PdfField) => {
             if (f.type === "checkbox") init[f.name] = !!s.values?.[f.name];
