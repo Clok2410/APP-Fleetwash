@@ -18,6 +18,7 @@ import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import { api } from "../api";
 import { colors, spacing, radius, typography } from "../theme";
+import PdfInlineEditor from "./PdfInlineEditor";
 
 type PdfField = {
   name: string;
@@ -277,7 +278,18 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
           </View>
         ) : tpl ? (
           <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 40 }}>
-            {Platform.OS === "web" && inSession && previewBase64 ? (
+            {Platform.OS === "web" && inSession && tpl?.pdf_base64 && (tpl.fields || []).some((f: any) => f.rect) ? (
+              <View style={{ marginBottom: spacing.md }}>
+                {/* @ts-ignore — web-only inline PDF editor */}
+                <PdfInlineEditor
+                  pdfBase64={tpl.pdf_base64}
+                  fields={tpl.fields || []}
+                  values={values}
+                  onChange={(name: string, val: any) => setValues((v) => ({ ...v, [name]: val }))}
+                  readOnly={locked && !isAdmin}
+                />
+              </View>
+            ) : Platform.OS === "web" && inSession && previewBase64 ? (
               <View style={{ height: 420, marginBottom: spacing.md, borderRadius: radius.md, overflow: "hidden", backgroundColor: "#0F172A" }}>
                 {/* @ts-ignore web-only iframe */}
                 <iframe
@@ -301,7 +313,9 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
               </View>
             ) : null}
 
-            {fields.map((f) => (
+            {/* Field list — fallback editor on native or when no widget rects */}
+            {(Platform.OS !== "web" || !inSession || !(tpl?.fields || []).some((ff: any) => ff.rect)) &&
+              fields.map((f) => (
               <View key={f.name} style={{ marginBottom: spacing.md }}>
                 <Text style={typography.label} numberOfLines={2}>
                   {prettyName(f.name)}

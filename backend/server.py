@@ -1604,7 +1604,13 @@ async def delete_customer_note(cid: str, nid: str, current=Depends(get_current_u
 
 # ----------------- PDF Fillable Forms -----------------
 def _extract_pdf_fields(pdf_bytes: bytes) -> List[Dict[str, Any]]:
-    """Parse AcroForm fields out of a PDF using pypdf. Returns a list of field dicts."""
+    """Parse AcroForm fields out of a PDF using pypdf. Returns a list of field dicts.
+
+    Each entry includes per-widget geometry so the UI can render inputs in place:
+    { name, type, value, options, page, rect:[x1,y1,x2,y2], page_width, page_height }
+    Some fields appear on multiple pages — we emit one entry per widget but reuse the field
+    name; UI should treat values as keyed by name.
+    """
     try:
         from pypdf import PdfReader
     except Exception:
@@ -1615,11 +1621,100 @@ def _extract_pdf_fields(pdf_bytes: bytes) -> List[Dict[str, Any]]:
     except Exception:
         return []
 
-    out: List[Dict[str, Any]] = []
-    for name, f in raw_fields.items():
+    # Build a quick lookup from page object -> index + size for /Annots scanning
+    page_meta: List[Dict[str, Any]] = []
+    for i, page in enumerate(reader.pages):
         try:
-            ft = (f.get("/FT") or "").strip() if isinstance(f, dict) else (f.field_type or "")
-            value = f.get("/V") if isinstance(f, dict) else f.value
+            mb = page.mediabox
+            w = float(mb.width)
+            h = float(mb.height)
+        except Exception:
+            w, h = 612.0, 792.0
+        page_meta.append({"index": i, "width": w, "height": h})
+
+    # Map widget annotation id (object id) -> (page_index, rect)
+    widget_to_page: Dict[str, Dict[str, Any]] = {}
+    try:
+        for pidx, page in enumerate(reader.pages):
+            annots = page.get("/Annots")
+            if not annots:
+                continue
+            for annot_ref in annots:
+                try:
+                    annot = annot_ref.get_object() if hasattr(annot_ref, "get_object") else annot_ref
+                    if annot.get("/Subtype") != "/Widget":
+                        continue
+                    rect = annot.get("/Rect")
+                    if not rect:
+                        continue
+                    r = [float(x) for x in rect]
+                    # Try to derive a unique key for this widget. pypdf doesn't always expose
+                    # indirect object id easily; use /T (field partial name) plus rect.
+                    t = annot.get("/T")
+                    if t is not None:
+                        key = f"{t}@{pidx}@{round(r[0],1)}_{round(r[1],1)}"
+                        widget_to_page[key] = {
+                            "page": pidx,
+                            "rect": r,
+                            "page_width": page_meta[pidx]["width"],
+                            "page_height": page_meta[pidx]["height"],
+                            "name": str(t),
+                        }
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    # Flatten: emit one entry per widget so multi-widget fields position correctly.
+    out: List[Dict[str, Any]] = []
+    seen_names: set = set()
+    for w in widget_to_page.values():
+        name = w["name"]
+        f = raw_fields.get(name)
+        if f is None:
+            continue
+        ft = (f.get("/FT") or "") if isinstance(f, dict) else (getattr(f, "field_type", "") or "")
+        value = f.get("/V") if isinstance(f, dict) else getattr(f, "value", None)
+        opts = f.get("/Opt") if isinstance(f, dict) else getattr(f, "options", None)
+        flags = f.get("/Ff", 0) if isinstance(f, dict) else 0
+        kind = "text"
+        options: Optional[List[str]] = None
+        if ft == "/Tx":
+            kind = "text"
+        elif ft == "/Btn":
+            if isinstance(flags, int) and flags & (1 << 15):
+                kind = "radio"
+            else:
+                kind = "checkbox"
+        elif ft == "/Ch":
+            kind = "select"
+        if opts:
+            clean: List[str] = []
+            for o in opts:
+                if isinstance(o, list) and len(o) >= 2:
+                    clean.append(str(o[1]))
+                else:
+                    clean.append(str(o))
+            options = clean
+        out.append({
+            "name": name,
+            "type": kind,
+            "value": "" if value is None else (value if isinstance(value, str) else str(value)),
+            "options": options,
+            "page": w["page"],
+            "rect": w["rect"],
+            "page_width": w["page_width"],
+            "page_height": w["page_height"],
+        })
+        seen_names.add(name)
+
+    # Fallback: any fields not found via annotation walk — still emit them WITHOUT rect.
+    for name, f in raw_fields.items():
+        if name in seen_names:
+            continue
+        try:
+            ft = (f.get("/FT") or "").strip() if isinstance(f, dict) else (getattr(f, "field_type", "") or "")
+            value = f.get("/V") if isinstance(f, dict) else getattr(f, "value", None)
             opts = f.get("/Opt") if isinstance(f, dict) else getattr(f, "options", None)
             flags = f.get("/Ff", 0) if isinstance(f, dict) else 0
             kind = "text"
@@ -1627,7 +1722,6 @@ def _extract_pdf_fields(pdf_bytes: bytes) -> List[Dict[str, Any]]:
             if ft == "/Tx":
                 kind = "text"
             elif ft == "/Btn":
-                # bit 16 (0x10000) = pushbutton, bit 15 (0x8000) = radio
                 if isinstance(flags, int) and flags & (1 << 15):
                     kind = "radio"
                 else:
@@ -1635,7 +1729,6 @@ def _extract_pdf_fields(pdf_bytes: bytes) -> List[Dict[str, Any]]:
             elif ft == "/Ch":
                 kind = "select"
             if opts:
-                # opts is sometimes list of strings, sometimes [export, label] pairs
                 clean: List[str] = []
                 for o in opts:
                     if isinstance(o, list) and len(o) >= 2:
@@ -1646,7 +1739,7 @@ def _extract_pdf_fields(pdf_bytes: bytes) -> List[Dict[str, Any]]:
             out.append({
                 "name": str(name),
                 "type": kind,
-                "value": "" if value is None else (str(value) if not isinstance(value, str) else value),
+                "value": "" if value is None else (value if isinstance(value, str) else str(value)),
                 "options": options,
             })
         except Exception:
@@ -1981,9 +2074,29 @@ async def drive_file_as_pdf_form(fid: str, current=Depends(get_current_user)):
     if not is_pdf:
         raise HTTPException(status_code=400, detail="Not a PDF file")
 
-    # Reuse existing template if already promoted
+    # Reuse existing template if already promoted, but re-parse if it has no widget geometry
     existing = await db.pdf_form_templates.find_one({"source_drive_file_id": fid})
     if existing:
+        has_rects = any((f or {}).get("rect") for f in (existing.get("fields") or []))
+        if has_rects:
+            res = serialize(existing).copy()
+            res.pop("pdf_base64", None)
+            return res
+        # Re-parse for geometry
+        try:
+            import base64 as _b64
+            new_fields = _extract_pdf_fields(_b64.b64decode(existing["pdf_base64"]))
+            await db.pdf_form_templates.update_one(
+                {"id": existing["id"]},
+                {"$set": {
+                    "fields": new_fields,
+                    "field_count": sum(1 for f in new_fields if not f.get("rect") is None) or len(new_fields),
+                    "has_acroform": len(new_fields) > 0,
+                }},
+            )
+            existing = await db.pdf_form_templates.find_one({"id": existing["id"]})
+        except Exception:
+            pass
         res = serialize(existing).copy()
         res.pop("pdf_base64", None)
         return res
