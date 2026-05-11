@@ -67,6 +67,12 @@ def serialize(doc: Optional[dict]) -> Optional[dict]:
         if isinstance(v, ObjectId):
             doc[k] = str(v)
         elif isinstance(v, datetime):
+            # Motor returns naive datetimes (no tzinfo) — they're stored as UTC by us via
+            # now_utc(). Treat naive datetimes as UTC so JSON output always includes a tz
+            # marker; without this JS parses "2026-05-11T14:00:00" as LOCAL time and shows
+            # a 1-hour offset (e.g. on the clock-in timer in BST/IST).
+            if v.tzinfo is None:
+                v = v.replace(tzinfo=timezone.utc)
             doc[k] = v.isoformat()
     return doc
 
