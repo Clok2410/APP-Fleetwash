@@ -109,6 +109,35 @@ user_problem_statement: |
   shift swap/availability, and admin dashboard.
 
 backend:
+  - task: "SMTP email delivery on PDF form submission (POST /pdf-forms/templates/{tid}/fill)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Implemented and tested locally: _send_smtp_email() called via asyncio.to_thread so it does not block the event loop. Real Gmail SMTP credentials in /app/backend/.env (smtp.gmail.com:587 STARTTLS)."
+        - working: true
+          agent: "testing"
+          comment: "Verified via /app/backend_test.py against public proxy URL. Built reportlab AcroForm PDF (text full_name + checkbox accept + choice dept[Engineering/Operations/HR/Finance]) and admin-uploaded it; staff POST /api/pdf-forms/templates/{tid}/fill {values:{full_name:'Riley Thompson',accept:true,dept:'Operations'}, flatten:true} returned 200 in 1.61s (well under the 5s budget — asyncio.to_thread is keeping the event loop unblocked). Response payload includes filled_pdf_base64 (8604 bytes, %PDF magic) and emailed_to=['admin@company.com'] (non-empty list as expected). Backend log (/var/log/supervisor/backend.err.log) shows INFO line 'staff-app:SMTP sent to [\\'admin@company.com\\'] — subject=\\'[StaffHub] Onboarding (smtp+overlay) — submitted by Jane Doe\\'' confirming actual SMTP delivery succeeded. _form_recipient_emails correctly pulled the single active admin opted-in (receives_forms != false)."
+  - task: "True visual PDF flattening (reportlab overlay stamps values onto page content)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Added _build_overlay_pdf() that uses reportlab to draw text at each field's /Rect coordinates per page, then merges the overlay onto each writer page via page.merge_page()."
+        - working: true
+          agent: "testing"
+          comment: "Verified via /app/backend_test.py against public proxy URL. After POST /api/pdf-forms/templates/{tid}/fill flatten=true the returned filled_pdf_base64 was re-parsed with pypdf and page[0].get_contents().get_data() was inspected: content stream contains b'Riley' (text overlay), b'Operations' (select overlay), and b'(X)' (checkbox X stamp via Helvetica-Bold drawString) — so values are baked into the page content and visible in any viewer. AcroForm /V values are simultaneously preserved: full_name='Riley Thompson', accept='/Yes', dept='Operations'. All 3 widget annots have /Ff bit-0 (ReadOnly) set. Collab session path verified identically: admin create session → staff PATCH values → admin /complete → admin GET /sessions/{sid}/pdf returns status=completed pdf_base64 (8604 bytes) whose content stream also contains 'Riley'/'Operations'/'(X)' and same /V + /Ff guarantees. Regression check: flatten=false still returns 200 with /V values matching ('Alex Morgan'/'/Yes'/'HR') and content stream does NOT contain the overlay text (overlay correctly skipped on flatten=false). 21/21 assertions PASS, 0 failures."
+
   - task: "Holiday endpoints (balance, create, list, decision)"
     implemented: true
     working: true
@@ -342,14 +371,15 @@ metadata:
 
 test_plan:
   current_focus:
-    - "PDF Fillable Forms (AcroForm parse + fill)"
+    - "SMTP email delivery on PDF form submission"
+    - "PDF visual flattening (values stamped onto page content)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
-    - agent: "main"
-      message: "Finished schedule.tsx UI for linked customer + pinned notes on staff shift card. Please run backend regression on Holidays, Shifts (with customer/site fields), and Customer Notes."
+    - agent: "testing"
+      message: "Backend regression PASSED 21/21 for the two new features via /app/backend_test.py. (1) SMTP email on PDF submission: POST /api/pdf-forms/templates/{tid}/fill flatten=true returned 200 in 1.61s (well under 5s — asyncio.to_thread keeps the event loop free) with emailed_to=['admin@company.com'] and filled_pdf_base64 (8604 bytes, %PDF magic). Backend log confirms 'staff-app:SMTP sent to [\\'admin@company.com\\'] — subject=\\'[StaffHub] Onboarding (smtp+overlay) — submitted by Jane Doe\\'' so the real Gmail SMTP delivery succeeded. (2) Visual overlay flattening: re-parsing the returned PDF with pypdf, page[0].get_contents().get_data() contains b'Riley', b'Operations' AND b'(X)' — values are stamped into the page content stream and will render in any PDF viewer. AcroForm /V values are still preserved (full_name='Riley Thompson', accept='/Yes', dept='Operations') and all 3 widget annots have /Ff bit-0 (ReadOnly) set. Same overlay+/V+/Ff guarantees verified end-to-end on the collaborative session path (admin create → staff PATCH → admin /complete → admin GET /sessions/{sid}/pdf). Regression: flatten=false still returns 200 with /V values populated and content stream WITHOUT overlay text (overlay correctly gated by flatten=true). Both new tasks marked working: true."
     - agent: "testing"
       message: "Backend regression complete via /app/backend_test.py against the public proxy URL. 25/25 tests passed across smoke (login admin/staff, /auth/me, /clock/status, /notifications), Holidays (balance baseline + pending delta + approve/reject + final math + admin-only decision), Shifts with customer/site auto-populated names (POST + staff GET persists customer_name/site_name), and Customer Notes (pinned-first ordering with pinned note created after non-pinned still returned first). No critical issues found. All three high/medium priority tasks now marked working: true."
     - agent: "main"

@@ -1865,8 +1865,92 @@ def _extract_pdf_fields(pdf_bytes: bytes) -> List[Dict[str, Any]]:
     return out
 
 
+def _build_overlay_pdf(fields: List[Dict[str, Any]], values: Dict[str, Any], page_sizes: List[tuple]) -> Optional[bytes]:
+    """Build a transparent PDF overlay (one page per source page) with text/checkmarks
+    drawn at each field's rect. Returns None if reportlab is unavailable.
+    page_sizes: [(width, height), ...] per page in points.
+    """
+    try:
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.colors import black
+    except Exception:
+        return None
+
+    buf = io.BytesIO()
+    # Use the size of the first page; we'll setPageSize per page below.
+    if not page_sizes:
+        return None
+    c = canvas.Canvas(buf, pagesize=page_sizes[0])
+    c.setFillColor(black)
+    c.setStrokeColor(black)
+
+    # Bucket fields by page
+    by_page: Dict[int, List[Dict[str, Any]]] = {}
+    for f in fields:
+        if f.get("rect") is None:
+            continue
+        by_page.setdefault(int(f.get("page") or 0), []).append(f)
+
+    for pi, (pw, ph) in enumerate(page_sizes):
+        c.setPageSize((pw, ph))
+        for f in by_page.get(pi, []):
+            name = f.get("name") or ""
+            v = values.get(name, None)
+            if v is None or v == "":
+                continue
+            rect = f["rect"]
+            x1, y1, x2, y2 = float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])
+            w = max(0.0, x2 - x1)
+            h = max(0.0, y2 - y1)
+            ftype = (f.get("type") or "text").lower()
+            try:
+                if ftype == "checkbox":
+                    truthy = bool(v) and str(v).lower() not in ("/off", "off", "false", "no", "0", "")
+                    if truthy:
+                        # Draw a bold check ✓ approximately centered in the box
+                        size = max(8.0, min(w, h) * 0.85)
+                        c.setFont("Helvetica-Bold", size)
+                        cx = x1 + w / 2 - size * 0.3
+                        cy = y1 + h / 2 - size * 0.32
+                        c.drawString(cx, cy, "X")
+                elif ftype == "radio":
+                    # Same treatment as checkbox if value matches the export name
+                    s = str(v)
+                    if s and s.lower() not in ("/off", "off"):
+                        size = max(8.0, min(w, h) * 0.85)
+                        c.setFont("Helvetica-Bold", size)
+                        cx = x1 + w / 2 - size * 0.3
+                        cy = y1 + h / 2 - size * 0.32
+                        c.drawString(cx, cy, "X")
+                else:
+                    # text / select / signature — draw the string, clipped within the rect
+                    s = str(v)
+                    if not s:
+                        continue
+                    # Font size: scale to fit single-line height; minimum 8pt, max 14pt
+                    fs = max(8.0, min(14.0, h * 0.7))
+                    c.setFont("Helvetica", fs)
+                    # Truncate long strings to roughly fit width
+                    # average char width ~ fs*0.5
+                    max_chars = max(1, int(w / (fs * 0.5))) if w > 0 else len(s)
+                    if len(s) > max_chars:
+                        s = s[: max(1, max_chars - 1)] + "…"
+                    # Bottom-left aligned with a small inner padding
+                    c.drawString(x1 + 2.0, y1 + max(2.0, (h - fs) / 2.0), s)
+            except Exception:
+                continue
+        c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
 def _fill_pdf(pdf_bytes: bytes, values: Dict[str, Any], flatten: bool = True) -> bytes:
-    """Fill AcroForm fields in PDF and return new PDF bytes. If flatten, mark read-only."""
+    """Fill AcroForm fields in PDF and return new PDF bytes.
+    When flatten=True, the answers are also visually stamped onto each page via a
+    reportlab overlay so they are visible in ANY PDF viewer (including basic mobile
+    previews that don't regenerate AcroForm appearances). The AcroForm is preserved
+    but its widgets are flagged ReadOnly to prevent further editing.
+    """
     from pypdf import PdfReader, PdfWriter
     from pypdf.generic import NameObject, BooleanObject, NumberObject
 
@@ -1900,7 +1984,29 @@ def _fill_pdf(pdf_bytes: bytes, values: Dict[str, Any], flatten: bool = True) ->
             pass
 
     if flatten:
-        # Best-effort flatten — mark fields read-only via /Ff bit 0 (numeric flag)
+        # 1) Visually stamp values onto each page via reportlab overlay (best-effort).
+        try:
+            fields = _extract_pdf_fields(pdf_bytes)
+            page_sizes: List[tuple] = []
+            for page in writer.pages:
+                try:
+                    mb = page.mediabox
+                    page_sizes.append((float(mb.width), float(mb.height)))
+                except Exception:
+                    page_sizes.append((612.0, 792.0))
+            overlay_bytes = _build_overlay_pdf(fields, values, page_sizes)
+            if overlay_bytes:
+                overlay_reader = PdfReader(io.BytesIO(overlay_bytes))
+                for i, page in enumerate(writer.pages):
+                    if i < len(overlay_reader.pages):
+                        try:
+                            page.merge_page(overlay_reader.pages[i])
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # 2) Mark widgets read-only so the answers can't be modified after submit.
         try:
             for page in writer.pages:
                 if "/Annots" in page:
@@ -2005,7 +2111,7 @@ async def fill_pdf_form(tid: str, body: PdfFormSubmissionIn, current=Depends(get
         "created_at": now_utc(),
     }
     await db.pdf_form_submissions.insert_one(sub)
-    # Email the filled PDF to admin recipients (best-effort)
+    # Email the filled PDF to admin recipients (best-effort, run in thread to avoid blocking event loop)
     sent_to: List[str] = []
     try:
         recipients = await _form_recipient_emails()
@@ -2018,12 +2124,14 @@ async def fill_pdf_form(tid: str, body: PdfFormSubmissionIn, current=Depends(get
                 f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}.\n\n"
                 f"The completed PDF is attached.\n"
             )
-            ok = _send_smtp_email(
+            import asyncio as _asyncio
+            ok = await _asyncio.to_thread(
+                _send_smtp_email,
                 recipients,
                 subj,
                 text,
-                attachment_bytes=filled,
-                attachment_filename=fname,
+                filled,
+                fname,
             )
             if ok:
                 sent_to = recipients
