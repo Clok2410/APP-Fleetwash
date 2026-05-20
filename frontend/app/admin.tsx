@@ -83,6 +83,8 @@ export default function AdminScreen() {
   const [ncCompany, setNcCompany] = useState("");
   const [ncEmail, setNcEmail] = useState("");
   const [ncPhone, setNcPhone] = useState("");
+  const [ncAddress, setNcAddress] = useState("");
+  const [ncEircode, setNcEircode] = useState("");
   const [offDepot, setOffDepot] = useState<string>("");
   const [offUser, setOffUser] = useState<string>("");
   const [offFrom, setOffFrom] = useState<string>("");
@@ -1921,27 +1923,51 @@ export default function AdminScreen() {
               <Text style={styles.addCtaText}>Add Customer</Text>
             </TouchableOpacity>
             <Text style={[typography.small, { marginTop: 8, marginBottom: 4 }]}>
-              Crew tap a customer to view contacts, locations, and notes. Assign shifts to a customer site to auto-notify on arrival.
+              Crew tap a customer to view contacts, sites, Eircode + Google Maps, and notes. Staff can read & add notes.
             </Text>
-            {customers.map((c) => (
-              <TouchableOpacity
-                key={c.id}
-                testID={`customer-${c.id}`}
-                style={styles.card}
-                onPress={() => setActiveCustomerId(c.id)}
-              >
-                <View style={[styles.smBtn, { backgroundColor: colors.brandSoft, width: 36, height: 36, borderRadius: 18 }]}>
-                  <Feather name="briefcase" size={16} color={colors.brand} />
+            {/* A4: Alphabetical sectioned list */}
+            {(() => {
+              const sorted = [...customers].sort((a: any, b: any) =>
+                (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" })
+              );
+              const groups: Record<string, any[]> = {};
+              sorted.forEach((c: any) => {
+                const letter = (c.name || "?").trim().charAt(0).toUpperCase() || "#";
+                const key = /[A-Z]/.test(letter) ? letter : "#";
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(c);
+              });
+              const letters = Object.keys(groups).sort();
+              return letters.map((L) => (
+                <View key={L}>
+                  <Text style={styles.azSectionHeader} testID={`az-section-${L}`}>{L}</Text>
+                  {groups[L].map((c: any) => (
+                    <TouchableOpacity
+                      key={c.id}
+                      testID={`customer-${c.id}`}
+                      style={styles.card}
+                      onPress={() => setActiveCustomerId(c.id)}
+                    >
+                      <View style={[styles.smBtn, { backgroundColor: colors.brandSoft, width: 36, height: 36, borderRadius: 18 }]}>
+                        <Feather name="briefcase" size={16} color={colors.brand} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontWeight: "700", color: colors.primary }}>{c.name}</Text>
+                        <Text style={typography.small}>
+                          {c.company || "—"} · {(c.contacts || []).length} contacts · {(c.sites || []).length} sites
+                        </Text>
+                        {(c.address || c.eircode) ? (
+                          <Text style={[typography.small, { marginTop: 2, color: colors.textMuted }]} numberOfLines={1}>
+                            <Feather name="map-pin" size={11} color={colors.textMuted} /> {c.address || ""}{c.eircode ? `  ${c.eircode}` : ""}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Feather name="chevron-right" size={16} color={colors.textMuted} />
+                    </TouchableOpacity>
+                  ))}
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontWeight: "700", color: colors.primary }}>{c.name}</Text>
-                  <Text style={typography.small}>
-                    {c.company || "—"} · {(c.contacts || []).length} contacts · {(c.sites || []).length} sites
-                  </Text>
-                </View>
-                <Feather name="chevron-right" size={16} color={colors.textMuted} />
-              </TouchableOpacity>
-            ))}
+              ));
+            })()}
           </>
         )}
 
@@ -2116,6 +2142,8 @@ export default function AdminScreen() {
             <TextInput style={styles.input} placeholder="Company" value={ncCompany} onChangeText={setNcCompany} placeholderTextColor={colors.textMuted} />
             <TextInput style={styles.input} placeholder="Email" value={ncEmail} onChangeText={setNcEmail} autoCapitalize="none" placeholderTextColor={colors.textMuted} />
             <TextInput style={styles.input} placeholder="Phone" value={ncPhone} onChangeText={setNcPhone} placeholderTextColor={colors.textMuted} />
+            <TextInput testID="cust-address" style={styles.input} placeholder="Address" value={ncAddress} onChangeText={setNcAddress} placeholderTextColor={colors.textMuted} />
+            <TextInput testID="cust-eircode" style={styles.input} placeholder="Eircode (e.g. D02 X285)" value={ncEircode} onChangeText={setNcEircode} autoCapitalize="characters" placeholderTextColor={colors.textMuted} />
             <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
               <TouchableOpacity style={[styles.modalBtn, { backgroundColor: colors.surface }]} onPress={() => setNewCustomerModal(false)}>
                 <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
@@ -2123,9 +2151,17 @@ export default function AdminScreen() {
               <TouchableOpacity testID="cust-submit" style={[styles.modalBtn, { backgroundColor: colors.primary }]} onPress={async () => {
                 if (!ncName) return Alert.alert("Name required");
                 try {
-                  const { data } = await api.post("/customers", { name: ncName, company: ncCompany, email: ncEmail, phone: ncPhone });
+                  const { data } = await api.post("/customers", {
+                    name: ncName,
+                    company: ncCompany,
+                    email: ncEmail,
+                    phone: ncPhone,
+                    address: ncAddress,
+                    eircode: ncEircode,
+                  });
                   setNewCustomerModal(false);
                   setNcName(""); setNcCompany(""); setNcEmail(""); setNcPhone("");
+                  setNcAddress(""); setNcEircode("");
                   await load();
                   setActiveCustomerId(data.id);
                 } catch (e: any) {
@@ -3069,6 +3105,21 @@ const styles = StyleSheet.create({
   reviewedToggleOn: { backgroundColor: "#0F766E", borderColor: "#0F766E" },
   reviewedToggleOff: { backgroundColor: "#fff", borderColor: colors.border },
   inboxCardUnreviewed: { borderLeftWidth: 3, borderLeftColor: colors.brand },
+
+  // A4: Customer alphabetical section header
+  azSectionHeader: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: colors.brand,
+    backgroundColor: colors.brandSoft,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    alignSelf: "flex-start",
+    marginTop: 12,
+    marginBottom: 4,
+    letterSpacing: 1,
+  },
 
   // ===== Desktop layout (Connecteam-style) =====
   deskRoot: { flex: 1, flexDirection: "row", backgroundColor: "#F6F8FB" },

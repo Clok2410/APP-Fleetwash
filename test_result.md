@@ -109,6 +109,21 @@ user_problem_statement: |
   shift swap/availability, and admin dashboard.
 
 backend:
+  - task: "Phase A4: Customer eircode/address fields + Site eircode field"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Extended CustomerIn pydantic model with two new optional fields: `address: Optional[str]` (free-text address) and `eircode: Optional[str]` (Irish postcode/postcode-like text). Both are persisted on POST /customers (set on doc dict) and PATCH /customers/{cid} (body.dict() already includes them). Extended SiteIn pydantic model with `eircode: Optional[str]` — POST /customers/{cid}/sites accepts and stores it on each site sub-doc. No DB migration needed: legacy docs without these fields return null in API responses, which the frontend treats as absent. Frontend redesign: (a) Admin Customers tab now renders an alphabetical sectioned list with A-Z chips (brand-blue-soft pill headers per starting letter, '#' bucket for non-alpha names) — already sorted by name asc server-side so no extra sort needed beyond grouping. Each card shows name, company, contact/site count, and a `<map-pin> address  eircode` one-liner. (b) New Customer modal accepts Address + Eircode at creation. (c) CustomerModal shows Profile card with mail/phone/home/hash icons + bold Eircode + brand-blue 'Open in Maps' button (uses Apple Maps URL on iOS, Google Maps web URL elsewhere — q=encoded eircode or address). (d) Admin sees a pencil-edit icon on the Profile header → opens Edit Profile sub-modal with all 6 fields (name/company/email/phone/address/eircode). (e) Each Site now displays its eircode (if any) + an inline 'Open in Maps' link. Staff role guard preserved: staff never see edit/trash/add-contact/add-site/edit-profile UI but they CAN still post notes via existing /customers/{cid}/notes endpoint (admin already allowed notes from any logged-in user per L2607-2622)."
+        - working: true
+          agent: "testing"
+          comment: "Phase A4 backend regression PASSED 55/55 via /app/customer_a4_test.py against the public proxy URL (admin@company.com / jane@company.com). (A) Create with new fields: A1 admin POST /customers {name:'Acme Co', company:'Acme Ltd', email, phone, address:'12 Main St, Dublin', eircode:'D02 X285'} → 200 with id, address and eircode persisted verbatim; A2 admin GET /customers/{cid} → 200 with both fields visible; A3 STAFF (Jane) GET /customers/{cid} → 200 with both fields visible (read open to any authenticated user); A4 staff GET /customers list contains new customer with both fields; A5 staff POST /customers → 403. (B) Backward compat: B1 admin POST /customers {name, company} WITHOUT address/eircode → 200; response has address=null and eircode=null (Pydantic Optional default-None persisted as null in the doc, matching either acceptable behaviour per spec); B2 GET legacy customer → 200 with no crash and both fields null. (C) PATCH: C1 admin PATCH /customers/{cid} {name:'Acme Co Renamed', address:'NEW addr', eircode:'A65 F4E2'} → 200 with all 3 fields reflected; C2 admin PATCH {name, eircode:''} → 200 with eircode='' (cleared, accepted per spec — empty string or null both acceptable); C3 staff PATCH → 403. (D) Sites with eircode: D1 admin POST /customers/{cid}/sites {name:'Main Yard', address:'Yard Rd', eircode:'D04 W7N6', description:'rear gate'} → 200 with site.eircode='D04 W7N6', name, address, description all reflected; D2 GET /customers/{cid} shows the new site embedded in customer.sites with eircode='D04 W7N6'; D3 admin POST site {name:'Old Site'} no eircode → 200 with eircode=null; D4 staff POST /sites → 403. (E) Notes (staff CAN add): E1 staff POST /customers/{cid}/notes {body:'gate code 1234', category:'access', pinned:false} → 200 with author_name='Jane Doe' EXACT match and author_id=staff_id (jane); body, category, pinned all match; E2 staff GET /customers/{cid}/notes → 200 list includes the new note; E3 admin POST /customers/{cid}/notes {body:'pinned admin note', category:'general', pinned:true} → 200 with pinned=true; GET notes confirms pinned-first ordering (first list element is the pinned admin note). (F) Cleanup: admin DELETE both test customers → 200 each (cascade-deletes notes per existing endpoint). All 55 assertions PASS, 0 failures. Task fully working per spec; staff note creation still works after refactor."
+
   - task: "Phase A2: Submissions Inbox + Mark Reviewed (GET /admin/submissions-inbox + PATCH review endpoints)"
     implemented: true
     working: true
@@ -512,7 +527,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Phase A2: Submissions Inbox + Mark Reviewed (GET /admin/submissions-inbox + PATCH review endpoints)"
+    - "Phase A4: Customer eircode/address fields + Site eircode field"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"

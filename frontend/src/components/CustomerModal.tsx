@@ -46,7 +46,17 @@ export default function CustomerModal({ customerId, onClose }: Props) {
 
   const [addSName, setAddSName] = useState("");
   const [addSAddr, setAddSAddr] = useState("");
+  const [addSEircode, setAddSEircode] = useState("");
   const [addSDesc, setAddSDesc] = useState("");
+
+  // A4: Admin profile edit
+  const [editProfile, setEditProfile] = useState(false);
+  const [epName, setEpName] = useState("");
+  const [epCompany, setEpCompany] = useState("");
+  const [epEmail, setEpEmail] = useState("");
+  const [epPhone, setEpPhone] = useState("");
+  const [epAddress, setEpAddress] = useState("");
+  const [epEircode, setEpEircode] = useState("");
 
   const load = useCallback(async () => {
     if (!customerId) return;
@@ -119,9 +129,9 @@ export default function CustomerModal({ customerId, onClose }: Props) {
   const addSite = async () => {
     if (!addSName) return Alert.alert("Name required");
     await api.post(`/customers/${customerId}/sites`, {
-      name: addSName, address: addSAddr, description: addSDesc,
+      name: addSName, address: addSAddr, eircode: addSEircode, description: addSDesc,
     });
-    setAddSName(""); setAddSAddr(""); setAddSDesc("");
+    setAddSName(""); setAddSAddr(""); setAddSEircode(""); setAddSDesc("");
     await load();
   };
 
@@ -133,6 +143,47 @@ export default function CustomerModal({ customerId, onClose }: Props) {
   const dialOrEmail = (kind: "tel" | "mailto", value?: string) => {
     if (!value) return;
     Linking.openURL(`${kind}:${value}`);
+  };
+
+  // A4: Open Google Maps for an eircode / address
+  const openMaps = (q?: string) => {
+    if (!q || !q.trim()) return;
+    const enc = encodeURIComponent(q.trim());
+    const url = Platform.select({
+      ios: `https://maps.apple.com/?q=${enc}`,
+      default: `https://www.google.com/maps/search/?api=1&query=${enc}`,
+    })!;
+    Linking.openURL(url);
+  };
+
+  // A4: Open Profile editor (admin)
+  const openProfileEditor = () => {
+    if (!customer) return;
+    setEpName(customer.name || "");
+    setEpCompany(customer.company || "");
+    setEpEmail(customer.email || "");
+    setEpPhone(customer.phone || "");
+    setEpAddress(customer.address || "");
+    setEpEircode(customer.eircode || "");
+    setEditProfile(true);
+  };
+
+  const saveProfile = async () => {
+    if (!epName.trim()) return Alert.alert("Name required");
+    try {
+      await api.patch(`/customers/${customerId}`, {
+        name: epName,
+        company: epCompany,
+        email: epEmail,
+        phone: epPhone,
+        address: epAddress,
+        eircode: epEircode,
+      });
+      setEditProfile(false);
+      await load();
+    } catch (e: any) {
+      Alert.alert("Error", e.response?.data?.detail || "Failed");
+    }
   };
 
   const isAdmin = user?.role === "admin";
@@ -152,16 +203,47 @@ export default function CustomerModal({ customerId, onClose }: Props) {
         ) : customer ? (
           <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md }}>
             <View style={s.card}>
-              <Text style={typography.label}>Profile</Text>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <Text style={[typography.label, { flex: 1 }]}>Profile</Text>
+                {isAdmin && (
+                  <TouchableOpacity testID="cust-edit-profile" onPress={openProfileEditor}>
+                    <Feather name="edit-2" size={14} color={colors.brand} />
+                  </TouchableOpacity>
+                )}
+              </View>
               {customer.company ? <Text style={{ marginTop: 4, fontWeight: "600" }}>{customer.company}</Text> : null}
               {customer.email ? (
                 <TouchableOpacity onPress={() => dialOrEmail("mailto", customer.email)}>
-                  <Text style={[typography.small, { color: colors.brand, marginTop: 4 }]}>{customer.email}</Text>
+                  <Text style={[typography.small, { color: colors.brand, marginTop: 4 }]}>
+                    <Feather name="mail" size={11} color={colors.brand} /> {customer.email}
+                  </Text>
                 </TouchableOpacity>
               ) : null}
               {customer.phone ? (
                 <TouchableOpacity onPress={() => dialOrEmail("tel", customer.phone)}>
-                  <Text style={[typography.small, { color: colors.brand, marginTop: 2 }]}>{customer.phone}</Text>
+                  <Text style={[typography.small, { color: colors.brand, marginTop: 2 }]}>
+                    <Feather name="phone" size={11} color={colors.brand} /> {customer.phone}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+              {customer.address ? (
+                <Text style={[typography.small, { marginTop: 4 }]}>
+                  <Feather name="home" size={11} color={colors.textMuted} /> {customer.address}
+                </Text>
+              ) : null}
+              {customer.eircode ? (
+                <Text style={[typography.small, { marginTop: 2, fontWeight: "700" }]} testID="cust-eircode-display">
+                  <Feather name="hash" size={11} color={colors.textMuted} /> {customer.eircode}
+                </Text>
+              ) : null}
+              {(customer.address || customer.eircode) ? (
+                <TouchableOpacity
+                  testID="cust-open-maps"
+                  style={[s.mapBtn, { marginTop: 8 }]}
+                  onPress={() => openMaps(customer.eircode || customer.address)}
+                >
+                  <Feather name="map-pin" size={13} color="#fff" />
+                  <Text style={{ color: "#fff", fontWeight: "700", marginLeft: 6, fontSize: 12 }}>Open in Maps</Text>
                 </TouchableOpacity>
               ) : null}
             </View>
@@ -207,7 +289,7 @@ export default function CustomerModal({ customerId, onClose }: Props) {
             </View>
 
             <View style={s.card}>
-              <Text style={typography.label}>Locations ({customer.sites?.length || 0})</Text>
+              <Text style={typography.label}>Sites ({customer.sites?.length || 0})</Text>
               {(customer.sites || []).map((st: any) => (
                 <View key={st.id} style={s.row} testID={`site-${st.id}`}>
                   <View style={[s.iconBubble, { backgroundColor: "#FEF3C7" }]}>
@@ -216,7 +298,24 @@ export default function CustomerModal({ customerId, onClose }: Props) {
                   <View style={{ flex: 1, marginLeft: 8 }}>
                     <Text style={{ fontWeight: "700" }}>{st.name}</Text>
                     {st.address ? <Text style={typography.small}>{st.address}</Text> : null}
+                    {st.eircode ? (
+                      <Text style={[typography.small, { fontWeight: "700", color: colors.textSecondary }]} testID={`site-eircode-${st.id}`}>
+                        <Feather name="hash" size={11} color={colors.textMuted} /> {st.eircode}
+                      </Text>
+                    ) : null}
                     {st.description ? <Text style={typography.small}>{st.description}</Text> : null}
+                    {(st.eircode || st.address) ? (
+                      <TouchableOpacity
+                        testID={`site-maps-${st.id}`}
+                        onPress={() => openMaps(st.eircode || st.address)}
+                        style={{ marginTop: 4, alignSelf: "flex-start", flexDirection: "row", alignItems: "center" }}
+                      >
+                        <Feather name="external-link" size={11} color={colors.brand} />
+                        <Text style={{ marginLeft: 4, color: colors.brand, fontSize: 11, fontWeight: "700" }}>
+                          Open in Maps
+                        </Text>
+                      </TouchableOpacity>
+                    ) : null}
                   </View>
                   {isAdmin && (
                     <TouchableOpacity onPress={() => removeSite(st.id)}>
@@ -229,9 +328,10 @@ export default function CustomerModal({ customerId, onClose }: Props) {
                 <View style={{ marginTop: 8, gap: 4 }}>
                   <TextInput testID="add-site-name" style={s.input} placeholder="Site name" value={addSName} onChangeText={setAddSName} placeholderTextColor={colors.textMuted} />
                   <TextInput style={s.input} placeholder="Address" value={addSAddr} onChangeText={setAddSAddr} placeholderTextColor={colors.textMuted} />
+                  <TextInput testID="add-site-eircode" style={s.input} placeholder="Eircode (e.g. D02 X285)" value={addSEircode} onChangeText={setAddSEircode} autoCapitalize="characters" placeholderTextColor={colors.textMuted} />
                   <TextInput style={s.input} placeholder="Notes / description" value={addSDesc} onChangeText={setAddSDesc} placeholderTextColor={colors.textMuted} />
                   <TouchableOpacity testID="add-site-submit" style={s.btnGhost} onPress={addSite}>
-                    <Text style={s.btnGhostText}>+ Add Location</Text>
+                    <Text style={s.btnGhostText}>+ Add Site</Text>
                   </TouchableOpacity>
                 </View>
               )}
@@ -314,6 +414,29 @@ export default function CustomerModal({ customerId, onClose }: Props) {
             </View>
           </ScrollView>
         ) : null}
+
+        {/* A4: Edit Profile sub-modal (admin only) */}
+        <Modal visible={editProfile} animationType="slide" transparent onRequestClose={() => setEditProfile(false)}>
+          <View style={s.modalBg}>
+            <View style={s.modalCard}>
+              <Text style={typography.h3}>Edit Profile</Text>
+              <TextInput testID="ep-name" style={s.input} placeholder="Name" value={epName} onChangeText={setEpName} placeholderTextColor={colors.textMuted} />
+              <TextInput style={s.input} placeholder="Company" value={epCompany} onChangeText={setEpCompany} placeholderTextColor={colors.textMuted} />
+              <TextInput style={s.input} placeholder="Email" value={epEmail} onChangeText={setEpEmail} autoCapitalize="none" placeholderTextColor={colors.textMuted} />
+              <TextInput style={s.input} placeholder="Phone" value={epPhone} onChangeText={setEpPhone} placeholderTextColor={colors.textMuted} />
+              <TextInput testID="ep-address" style={s.input} placeholder="Address" value={epAddress} onChangeText={setEpAddress} placeholderTextColor={colors.textMuted} />
+              <TextInput testID="ep-eircode" style={s.input} placeholder="Eircode" value={epEircode} onChangeText={setEpEircode} autoCapitalize="characters" placeholderTextColor={colors.textMuted} />
+              <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+                <TouchableOpacity style={[s.btnGhost, { flex: 1 }]} onPress={() => setEditProfile(false)}>
+                  <Text style={s.btnGhostText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity testID="ep-save" style={[s.btnPrimary, { flex: 1 }]} onPress={saveProfile}>
+                  <Text style={{ color: "#fff", fontWeight: "700" }}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </Modal>
   );
@@ -331,4 +454,7 @@ const s = StyleSheet.create({
   chip: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: radius.pill, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center" },
   note: { backgroundColor: "#fff", borderRadius: radius.md, padding: 10, borderWidth: 1, borderColor: colors.border },
   catPill: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  mapBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", height: 36, paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.brand, alignSelf: "flex-start" },
+  modalBg: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.4)" },
+  modalCard: { backgroundColor: "#fff", padding: spacing.lg, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl },
 });

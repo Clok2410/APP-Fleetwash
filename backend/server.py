@@ -257,6 +257,7 @@ class ContactIn(BaseModel):
 class SiteIn(BaseModel):
     name: str
     address: Optional[str] = None
+    eircode: Optional[str] = None  # A4: Irish postcode (or any postcode-like text)
     lat: Optional[float] = None
     lng: Optional[float] = None
     radius_m: Optional[float] = 200.0
@@ -268,6 +269,8 @@ class CustomerIn(BaseModel):
     company: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    address: Optional[str] = None  # A4: full address line
+    eircode: Optional[str] = None  # A4: Irish postcode / postcode text
 
 
 class CustomerNoteIn(BaseModel):
@@ -2544,6 +2547,8 @@ async def create_customer(body: CustomerIn, _=Depends(require_admin)):
         "company": body.company,
         "email": body.email,
         "phone": body.phone,
+        "address": body.address,
+        "eircode": body.eircode,
         "contacts": [],
         "sites": [],
         "created_at": now_utc(),
