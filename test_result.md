@@ -109,6 +109,21 @@ user_problem_statement: |
   shift swap/availability, and admin dashboard.
 
 backend:
+  - task: "Phase A1: PATCH /holidays/requests/{rid} — edit dates/reason/type"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "New endpoint PATCH /api/holidays/requests/{rid} added (HolidayEditIn body: start_date?, end_date?, reason?, type?). Rules: (a) Staff can edit ONLY their OWN PENDING requests (403 if other user; 400 if non-pending). (b) Admin can edit any request in any state. (c) Validates start/end ISO dates via _validate_iso_date; type ∈ {annual,sick,unpaid}; end_date >= start_date else 400. (d) Recomputes `days` = (end-start).days+1 if dates touched. (e) Stamps edited_at, edited_by ('admin'|'self'), edited_by_name. (f) 404 if rid not found. Returns updated doc. Frontend admin.tsx now opens a Holiday Detail modal on row click (view/edit/approve/reject/cancel)."
+        - working: true
+          agent: "testing"
+          comment: "Phase A1 backend regression PASSED 36/36 via /app/holiday_edit_test.py against the public proxy URL (admin@company.com / jane@company.com). (A) Staff edits own pending: A1 POST {2027-08-02→2027-08-06, family, annual} → 200 days=5; A2 PATCH {start:2027-08-03, end:2027-08-07, reason:'family trip updated'} → 200 with all 3 fields reflected, days=5 recomputed, edited_at populated, edited_by='self', edited_by_name='Jane Doe' EXACT match; A3 PATCH {type:'sick'} → 200 type='sick'; A4 PATCH {type:'vacation'} → 400 \"type must be 'annual'|'sick'|'unpaid'\"; A5 PATCH {start:2027-08-10, end:2027-08-05} → 400 'end_date cannot be before start_date'; A6 PATCH {start_date:'bad-date'} → 400 'start_date must be YYYY-MM-DD'; A7 PATCH {} → 200 no-op (doc returned unchanged); A8 PATCH /nonexistent-xyz → 404 'Request not found'. (B) Staff cannot edit non-pending: B (pre) rid still pending verified; B1 admin POST /decision?decision=approved → 200; B2 staff PATCH approved → 400 with detail 'Only pending requests can be edited by staff' (contains 'pending'). (C) Admin edits any state: C1 admin PATCH the APPROVED request with {start:2027-08-15, end:2027-08-20, reason:'admin-changed'} → 200, days=6 (Aug 15→20 inclusive), edited_by='admin', edited_by_name='Admin', reason='admin-changed', status still 'approved' (admin edit does not change status); C2 admin PATCH a fresh PENDING request from Jane → 200 with edited_by='admin'; C3 admin PATCH /zzz-not-real → 404. (D) Auth: D1 unauth PATCH → 401. (E) Cleanup: staff cancel pending + admin cancel approved → both 200; Jane's balance returns to initial state (entitlement=30, used=0, pending=0, remaining=30, in_deficit=false). All 36 assertions PASS, 0 failures. Task fully working per spec."
+
   - task: "Roster R1: fuzzy staff-match suggestions + reusable roster templates"
     implemented: true
     working: true
@@ -473,7 +488,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Roster PDF import: AI parse + publish to staff schedules"
+    - "Phase A1: PATCH /holidays/requests/{rid} — edit dates/reason/type"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
