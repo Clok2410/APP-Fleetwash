@@ -194,6 +194,28 @@ export default function AdminScreen() {
     await load();
   };
 
+  const cancelHoliday = (h: any) => {
+    Alert.alert(
+      "Cancel holiday?",
+      `Cancel ${h.user_name}'s ${h.start_date} → ${h.end_date}? Days will be refunded.`,
+      [
+        { text: "Keep", style: "cancel" },
+        {
+          text: "Cancel it",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await api.post(`/holidays/requests/${h.id}/cancel`);
+              await load();
+            } catch (e: any) {
+              Alert.alert("Failed", e.response?.data?.detail || "Try again");
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const createShift = async () => {
     if (!sUser || !sTitle || !sStart || !sEnd) return Alert.alert("Missing info", "All fields required");
     try {
@@ -509,20 +531,42 @@ export default function AdminScreen() {
                 <View key={h.id} style={styles.card}>
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontWeight: "700", color: colors.primary }}>{h.user_name}</Text>
-                    <Text style={typography.small}>{h.start_date} → {h.end_date} · {h.type}</Text>
+                    <Text style={typography.small}>
+                      {h.start_date} → {h.end_date} · {h.type}
+                      {h.days ? ` · ${h.days}d` : ""}
+                    </Text>
                     {h.reason ? <Text style={typography.small}>{h.reason}</Text> : null}
                     <Text style={[typography.small, { marginTop: 4, fontWeight: "700" }]}>{h.status?.toUpperCase()}</Text>
+                    {h.status === "cancelled" && h.cancelled_by ? (
+                      <Text style={[typography.small, { color: colors.textMuted, fontSize: 11 }]}>
+                        by {h.cancelled_by === "admin" ? h.cancelled_by_name || "admin" : "staff"}
+                      </Text>
+                    ) : null}
                   </View>
-                  {h.status === "pending" && (
-                    <View style={{ gap: 6 }}>
-                      <TouchableOpacity style={[styles.smBtn, { backgroundColor: colors.success }]} onPress={() => decideHoliday(h.id, "approved")}>
-                        <Feather name="check" size={14} color="#fff" />
+                  <View style={{ gap: 6 }}>
+                    {h.status === "pending" && (
+                      <>
+                        <TouchableOpacity testID={`approve-${h.id}`} style={[styles.smBtn, { backgroundColor: colors.success }]} onPress={() => decideHoliday(h.id, "approved")}>
+                          <Feather name="check" size={14} color="#fff" />
+                        </TouchableOpacity>
+                        <TouchableOpacity testID={`reject-${h.id}`} style={[styles.smBtn, { backgroundColor: colors.alert }]} onPress={() => decideHoliday(h.id, "rejected")}>
+                          <Feather name="x" size={14} color="#fff" />
+                        </TouchableOpacity>
+                      </>
+                    )}
+                    {(h.status === "pending" || h.status === "approved") && (
+                      <TouchableOpacity
+                        testID={`cancel-h-${h.id}`}
+                        style={[styles.smBtn, { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.alert }]}
+                        onPress={() => cancelHoliday(h)}
+                      >
+                        <Feather name="x-circle" size={12} color={colors.alert} />
+                        <Text style={{ color: colors.alert, fontSize: 10, fontWeight: "700", marginLeft: 3 }}>
+                          Cancel
+                        </Text>
                       </TouchableOpacity>
-                      <TouchableOpacity style={[styles.smBtn, { backgroundColor: colors.alert }]} onPress={() => decideHoliday(h.id, "rejected")}>
-                        <Feather name="x" size={14} color="#fff" />
-                      </TouchableOpacity>
-                    </View>
-                  )}
+                    )}
+                  </View>
                 </View>
               ))
             )}

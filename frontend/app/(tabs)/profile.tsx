@@ -103,6 +103,28 @@ export default function ProfileScreen() {
     }
   };
 
+  const cancelRequest = (r: any) => {
+    Alert.alert(
+      "Cancel holiday?",
+      `${r.start_date} → ${r.end_date}${r.days ? ` (${r.days} day${r.days === 1 ? "" : "s"})` : ""}. This will refund the days to your balance.`,
+      [
+        { text: "Keep request", style: "cancel" },
+        {
+          text: "Cancel it",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await api.post(`/holidays/requests/${r.id}/cancel`);
+              await load();
+            } catch (e: any) {
+              Alert.alert("Failed", e.response?.data?.detail || "Try again");
+            }
+          },
+        },
+      ]
+    );
+  };
+
   useFocusEffect(
     useCallback(() => {
       load();
@@ -223,11 +245,41 @@ export default function ProfileScreen() {
         )}
 
         {balance && (
-          <View style={styles.row3}>
-            <Stat label="Total" value={balance.entitlement} />
-            <Stat label="Used" value={balance.used} color={colors.alert} />
-            <Stat label="Left" value={balance.remaining} color={colors.success} />
-          </View>
+          <>
+            <View style={styles.row3}>
+              <Stat label="Total" value={balance.entitlement} />
+              <Stat label="Used" value={balance.used} color={colors.alert} />
+              <Stat
+                label={balance.in_deficit ? "Deficit" : "Left"}
+                value={balance.remaining}
+                color={balance.in_deficit ? colors.alert : colors.success}
+              />
+            </View>
+            {balance.pending > 0 || balance.bank_holiday_count ? (
+              <View style={styles.balanceMeta}>
+                {balance.pending > 0 ? (
+                  <Text style={[typography.small, { color: colors.brand, fontWeight: "600" }]}>
+                    <Feather name="clock" size={11} color={colors.brand} />{" "}
+                    {balance.pending} day{balance.pending === 1 ? "" : "s"} pending approval
+                  </Text>
+                ) : null}
+                {balance.bank_holiday_count ? (
+                  <Text style={[typography.small, { color: colors.textMuted }]}>
+                    <Feather name="flag" size={11} color={colors.textMuted} />{" "}
+                    {balance.bank_holiday_count} bank holiday{balance.bank_holiday_count === 1 ? "" : "s"} ({balance.bank_holiday_hours_value}h)
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+            {balance.in_deficit ? (
+              <View style={styles.deficitBanner}>
+                <Feather name="alert-triangle" size={14} color={colors.alert} />
+                <Text style={[typography.small, { marginLeft: 6, color: colors.alert, flex: 1 }]}>
+                  You're in deficit by {Math.abs(balance.remaining)} day{Math.abs(balance.remaining) === 1 ? "" : "s"}. New requests still allowed — admin will review.
+                </Text>
+              </View>
+            ) : null}
+          </>
         )}
 
         {/* Time Clock card — weekly Mon→Sun total + holiday accrual */}
@@ -312,27 +364,65 @@ export default function ProfileScreen() {
           {requests.length === 0 ? (
             <Text style={[typography.small, { paddingVertical: 16 }]}>No requests yet.</Text>
           ) : (
-            requests.map((r) => (
-              <View key={r.id} style={styles.requestRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontWeight: "600", color: colors.primary }}>
-                    {r.start_date} → {r.end_date}
-                  </Text>
-                  <Text style={typography.small}>
-                    {r.type} {r.reason ? `· ${r.reason}` : ""}
-                  </Text>
+            requests.map((r) => {
+              const canCancel = r.status === "pending" || r.status === "approved";
+              return (
+                <View key={r.id} style={styles.requestRow} testID={`req-${r.id}`}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontWeight: "600", color: colors.primary }}>
+                      {r.start_date} → {r.end_date}
+                      {r.days ? (
+                        <Text style={[typography.small, { color: colors.textMuted, fontWeight: "400" }]}>
+                          {"  · "}
+                          {r.days} day{r.days === 1 ? "" : "s"}
+                        </Text>
+                      ) : null}
+                    </Text>
+                    <Text style={typography.small}>
+                      {r.type} {r.reason ? `· ${r.reason}` : ""}
+                    </Text>
+                    {r.status === "cancelled" && r.cancelled_by ? (
+                      <Text style={[typography.small, { color: colors.textMuted, fontSize: 11 }]}>
+                        Cancelled by {r.cancelled_by === "admin" ? r.cancelled_by_name || "admin" : "you"}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <View
+                      style={[
+                        styles.statusPill,
+                        r.status === "approved" && { backgroundColor: "#D1FAE5" },
+                        r.status === "rejected" && { backgroundColor: "#FEE2E2" },
+                        r.status === "cancelled" && { backgroundColor: colors.surface },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.statusText,
+                          r.status === "cancelled" && { color: colors.textMuted },
+                        ]}
+                      >
+                        {r.status}
+                      </Text>
+                    </View>
+                    {canCancel ? (
+                      <TouchableOpacity
+                        testID={`cancel-req-${r.id}`}
+                        onPress={() => cancelRequest(r)}
+                        style={styles.cancelLink}
+                      >
+                        <Feather name="x-circle" size={11} color={colors.alert} />
+                        <Text
+                          style={{ color: colors.alert, fontSize: 11, fontWeight: "600", marginLeft: 4 }}
+                        >
+                          Cancel
+                        </Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
                 </View>
-                <View
-                  style={[
-                    styles.statusPill,
-                    r.status === "approved" && { backgroundColor: "#D1FAE5" },
-                    r.status === "rejected" && { backgroundColor: "#FEE2E2" },
-                  ]}
-                >
-                  <Text style={styles.statusText}>{r.status}</Text>
-                </View>
-              </View>
-            ))
+              );
+            })
           )}
         </View>
 
@@ -789,6 +879,32 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
+  },
+  balanceMeta: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    paddingHorizontal: 6,
+    marginTop: 2,
+    gap: 8,
+  },
+  deficitBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FEF3C7",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+  },
+  cancelLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    marginTop: 4,
   },
   addBtn: {
     flexDirection: "row",

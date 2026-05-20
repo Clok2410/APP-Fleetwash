@@ -951,16 +951,45 @@ async def holiday_balance(current=Depends(get_current_user)):
         s = datetime.fromisoformat(r["start_date"]).date()
         e = datetime.fromisoformat(r["end_date"]).date()
         pending_days += (e - s).days + 1
+    # Accrued holiday HOURS from clock entries YTD (1h per 3h net worked).
+    # Note: this is informational; the day-based balance above is the official figure.
+    year = datetime.utcnow().year
+    start_y = datetime(year, 1, 1, tzinfo=timezone.utc)
+    end_y = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    entries = await db.clock_entries.find(
+        {"user_id": current["id"], "clock_in": {"$gte": start_y, "$lt": end_y}}
+    ).to_list(5000)
+    total_secs = 0
+    for e in entries:
+        total_secs += _entry_seconds(e, cap_to=end_y)
+    accr = _accrual_hours(total_secs)
+    # Bank holiday count for the year (informational)
+    bh_count = await db.bank_holidays.count_documents(
+        {"date": {"$gte": f"{year}-01-01", "$lt": f"{year+1}-01-01"}}
+    )
+    remaining = entitlement - used_days - pending_days
     return {
         "entitlement": entitlement,
         "used": used_days,
         "pending": pending_days,
-        "remaining": entitlement - used_days - pending_days,
+        "remaining": remaining,
+        "in_deficit": remaining < 0,
+        "accrued_holiday_hours": accr["accrued_holiday_hours"],
+        "net_hours_ytd": accr["net_hours"],
+        "bank_holiday_count": bh_count,
+        "bank_holiday_hours_value": bh_count * 8,
     }
 
 
 @api.post("/holidays/requests")
 async def create_holiday_request(body: HolidayRequestIn, current=Depends(get_current_user)):
+    # Compute requested days (informational); allow request even if balance is 0/negative.
+    try:
+        s = datetime.fromisoformat(body.start_date).date()
+        e = datetime.fromisoformat(body.end_date).date()
+        days = (e - s).days + 1
+    except Exception:
+        days = 0
     req = {
         "id": str(uuid.uuid4()),
         "user_id": current["id"],
@@ -969,6 +998,7 @@ async def create_holiday_request(body: HolidayRequestIn, current=Depends(get_cur
         "end_date": body.end_date,
         "reason": body.reason,
         "type": body.type,
+        "days": days,
         "status": "pending",
         "created_at": now_utc(),
     }
@@ -1005,6 +1035,47 @@ async def decide_holiday(rid: str, decision: str, _=Depends(require_admin)):
         except Exception:
             pass
     return {"ok": True}
+
+
+@api.post("/holidays/requests/{rid}/cancel")
+async def cancel_holiday(rid: str, current=Depends(get_current_user)):
+    """Cancel a holiday request. Staff can cancel their own requests in any state
+    (pending/approved). Admin can cancel anyone's request. A cancelled request
+    refunds days back to the balance automatically (because cancelled is not
+    counted as used or pending)."""
+    h = await db.holiday_requests.find_one({"id": rid})
+    if not h:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if current.get("role") != "admin" and h.get("user_id") != current["id"]:
+        raise HTTPException(status_code=403, detail="Cannot cancel another staff member's request")
+    if h.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Request already cancelled")
+    if h.get("status") == "rejected":
+        raise HTTPException(status_code=400, detail="Cannot cancel a rejected request")
+    cancelled_by = "admin" if current.get("role") == "admin" else "self"
+    await db.holiday_requests.update_one(
+        {"id": rid},
+        {"$set": {
+            "status": "cancelled",
+            "cancelled_at": now_utc(),
+            "cancelled_by": cancelled_by,
+            "cancelled_by_name": current.get("name"),
+        }},
+    )
+    # Notify the request owner if cancelled by admin
+    if cancelled_by == "admin" and h.get("user_id") != current["id"]:
+        try:
+            await notify(
+                h["user_id"],
+                "Holiday cancelled",
+                f"{h.get('start_date','')} → {h.get('end_date','')} cancelled by admin",
+                "holiday",
+                rid,
+            )
+        except Exception:
+            pass
+    doc = await db.holiday_requests.find_one({"id": rid})
+    return serialize(doc)
 
 
 # ----------------- Shifts / Scheduler -----------------

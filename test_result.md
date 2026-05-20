@@ -109,6 +109,21 @@ user_problem_statement: |
   shift swap/availability, and admin dashboard.
 
 backend:
+  - task: "Phase 3: Holiday cancel + balance breakdown + days field + allow 0-balance"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Phase 3 backend additions. (1) POST /api/holidays/requests now stamps a 'days' field on the document (computed (end-start).days+1). Backend already allowed creating a request with 0 or negative balance (no balance check exists), so the 'allow 0-balance' requirement is satisfied — the new in_deficit flag in /balance signals it to the frontend. (2) GET /api/holidays/balance enriched: now also returns {in_deficit (remaining<0), accrued_holiday_hours (YTD net/3 from clock entries), net_hours_ytd, bank_holiday_count (rows in db.bank_holidays for current year), bank_holiday_hours_value (count*8)}. (3) NEW POST /api/holidays/requests/{rid}/cancel — staff cancels own (any state except rejected/already-cancelled); admin cancels anyone's. Sets status='cancelled', cancelled_at, cancelled_by='self'|'admin', cancelled_by_name. Cancelled requests are NOT counted in balance.used or balance.pending (refunds days). 400 if already cancelled or status=rejected. 403 if a different staff user tries to cancel someone else's. Sends notification to owner if admin cancels."
+        - working: true
+          agent: "testing"
+          comment: "Phase 3 backend regression PASSED 44/44 via /app/phase3_test.py against the public proxy URL (admin@company.com / jane@company.com). (A) Days stamping: POST /holidays/requests {2027-01-05→2027-01-09} → 200 with days=5; single-day {2027-01-12→2027-01-12} → 200 with days=1. (B) Balance breakdown: GET /holidays/balance → 200 with ALL required keys present {entitlement, used, pending, remaining, in_deficit, accrued_holiday_hours, net_hours_ytd, bank_holiday_count, bank_holiday_hours_value}; in_deficit is bool; accrued_holiday_hours and net_hours_ytd are numeric; bank_holiday_count is int=10 (Ireland 2026 seeded); bank_holiday_hours_value=80 == count*8; pending=6 (≥6 required). (C) Allow deficit: admin PATCH /users/{jane}/holiday_entitlement → 1; staff POST 30-day request {2027-02-01→2027-03-02} → 200 with days=30 (not 400); GET /balance shows in_deficit=true and remaining<0; cleanup cancel + reset entitlement→30 → in_deficit=false. (D) Staff cancels own pending: POST /holidays/requests/{rid1}/cancel → 200 with status='cancelled', cancelled_by='self', cancelled_at present; balance.pending decreased by exactly 5 (refunded); repeat cancel → 400 with detail containing 'already cancelled'. (E) Admin cancels approved: admin /decision?decision=approved → 200, balance.used+=1; admin POST /cancel → 200 with cancelled_by='admin' and cancelled_by_name populated ('Admin'); balance.used refunded by 1. (F) Permissions/edge: F1 admin cancels staff's pending → 200 with cancelled_by='admin' ✓; F2 cross-user 403 SKIPPED (only admin@ + jane@ exist — only 1 active staff, noted in report as expected); F3 reject then cancel → 400 with detail containing 'rejected' ✓; F4 cancel non-existent id → 404 ✓. (G) Unauth POST /cancel → 401 ✓. Cleanup: all leftover Jane requests cancelled, final balance entitlement=30/used=0/pending=0/remaining=30/in_deficit=false. No critical or minor issues. Task fully working per spec."
+
   - task: "Phase 2: Profile editing + eligibility (Sick Pay & Bank Holiday)"
     implemented: true
     working: true
@@ -415,7 +430,8 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Phase 3: Holiday cancel + balance breakdown + allow 0-balance"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
