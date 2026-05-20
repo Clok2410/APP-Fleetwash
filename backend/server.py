@@ -212,6 +212,19 @@ class ClockNoteInGeo(BaseModel):
     shift_id: Optional[str] = None  # optional: link clock-in to a scheduled shift
 
 
+class ClockEntryPatchIn(BaseModel):
+    clock_in: Optional[str] = None  # ISO 8601
+    clock_out: Optional[str] = None  # ISO 8601
+    note: Optional[str] = None
+    location: Optional[str] = None
+
+
+class BankHolidayIn(BaseModel):
+    date: str  # YYYY-MM-DD
+    name: str
+    hours: float = 8.0  # default 8 hours per bank holiday
+
+
 class ContactIn(BaseModel):
     name: str
     role: Optional[str] = None
@@ -473,6 +486,281 @@ async def clock_history(current=Depends(get_current_user), user_id: Optional[str
     query_user = user_id if (user_id and current.get("role") == "admin") else current["id"]
     docs = await db.clock_entries.find({"user_id": query_user}).sort("clock_in", -1).to_list(200)
     return [serialize(d) for d in docs]
+
+
+# ----------------- Phase 1: Hours, Accrual, Bank Holidays -----------------
+def _aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Ensure a datetime is timezone-aware (assume UTC if naive)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _entry_seconds(entry: Dict[str, Any], cap_to: Optional[datetime] = None) -> int:
+    """Compute duration in seconds for a clock entry. If still open, use cap_to (default now)."""
+    cin = _aware(entry.get("clock_in"))
+    cout = _aware(entry.get("clock_out"))
+    if cin is None:
+        return 0
+    if cout is None:
+        cout = cap_to or _aware(datetime.utcnow().replace(tzinfo=timezone.utc))
+    if cout < cin:
+        return 0
+    return int((cout - cin).total_seconds())
+
+
+def _week_bounds_mon_sun(ref: datetime) -> tuple:
+    """Return (mon_utc, next_mon_utc) for Mon→Sun week containing ref (UTC)."""
+    ref = _aware(ref)
+    # Monday = 0
+    monday = (ref - timedelta(days=ref.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    return monday, monday + timedelta(days=7)
+
+
+def _accrual_hours(worked_seconds: int) -> Dict[str, float]:
+    """Apply company rule: deduct 30 min break PER 8 hours worked (option A: once per ≥8h shift,
+    applied here as pro-rata across the period). Then accrue 1 hour holiday per 3 hours net worked.
+
+    For simplicity at the aggregate level, we apply: break = 0.5h * floor(worked_hours / 8).
+    """
+    worked_h = worked_seconds / 3600.0
+    breaks_h = 0.5 * (worked_h // 8.0)
+    net_h = max(0.0, worked_h - breaks_h)
+    accrued_h = net_h / 3.0
+    return {
+        "worked_hours": round(worked_h, 2),
+        "break_hours": round(breaks_h, 2),
+        "net_hours": round(net_h, 2),
+        "accrued_holiday_hours": round(accrued_h, 2),
+    }
+
+
+def _bucket_entries_by_day(entries: List[Dict[str, Any]], cap_to: Optional[datetime] = None) -> Dict[str, float]:
+    """Sum hours-worked per ISO day (YYYY-MM-DD, UTC)."""
+    out: Dict[str, float] = {}
+    for e in entries:
+        cin = _aware(e.get("clock_in"))
+        if cin is None:
+            continue
+        day = cin.strftime("%Y-%m-%d")
+        secs = _entry_seconds(e, cap_to=cap_to)
+        out[day] = out.get(day, 0.0) + secs / 3600.0
+    return out
+
+
+@api.get("/clock/weekly-summary")
+async def clock_weekly_summary(
+    current=Depends(get_current_user),
+    user_id: Optional[str] = None,
+    week_start: Optional[str] = None,  # YYYY-MM-DD (Monday); defaults to current week
+):
+    """Return Mon→Sun hours worked for the current or specified week. Staff sees own; admin can pass user_id."""
+    query_user = user_id if (user_id and current.get("role") == "admin") else current["id"]
+    if week_start:
+        try:
+            ref = datetime.fromisoformat(week_start).replace(tzinfo=timezone.utc)
+        except Exception:
+            raise HTTPException(status_code=400, detail="week_start must be YYYY-MM-DD (Monday)")
+    else:
+        ref = datetime.utcnow().replace(tzinfo=timezone.utc)
+    mon, next_mon = _week_bounds_mon_sun(ref)
+    entries = await db.clock_entries.find(
+        {"user_id": query_user, "clock_in": {"$gte": mon, "$lt": next_mon}}
+    ).sort("clock_in", 1).to_list(500)
+    cap_to = next_mon  # don't bleed an open shift past the week boundary
+    now_aware = datetime.utcnow().replace(tzinfo=timezone.utc)
+    if now_aware < cap_to:
+        cap_to = now_aware
+    per_day = _bucket_entries_by_day(entries, cap_to=cap_to)
+    days: List[Dict[str, Any]] = []
+    total_secs = 0
+    for i in range(7):
+        d = (mon + timedelta(days=i)).strftime("%Y-%m-%d")
+        h = per_day.get(d, 0.0)
+        days.append({"date": d, "hours": round(h, 2)})
+        total_secs += int(h * 3600)
+    accr = _accrual_hours(total_secs)
+    return {
+        "user_id": query_user,
+        "week_start": mon.strftime("%Y-%m-%d"),
+        "week_end": (next_mon - timedelta(days=1)).strftime("%Y-%m-%d"),
+        "days": days,
+        "total_hours": accr["worked_hours"],
+        "break_hours": accr["break_hours"],
+        "net_hours": accr["net_hours"],
+        "accrued_holiday_hours": accr["accrued_holiday_hours"],
+    }
+
+
+@api.get("/clock/accrual")
+async def clock_accrual(
+    current=Depends(get_current_user),
+    user_id: Optional[str] = None,
+    year: Optional[int] = None,
+):
+    """Return total worked hours + holiday hours accrued for a given year (default current year, UTC)."""
+    query_user = user_id if (user_id and current.get("role") == "admin") else current["id"]
+    y = year or datetime.utcnow().year
+    start = datetime(y, 1, 1, tzinfo=timezone.utc)
+    end = datetime(y + 1, 1, 1, tzinfo=timezone.utc)
+    entries = await db.clock_entries.find(
+        {"user_id": query_user, "clock_in": {"$gte": start, "$lt": end}}
+    ).to_list(5000)
+    total_secs = 0
+    for e in entries:
+        total_secs += _entry_seconds(e, cap_to=end)
+    accr = _accrual_hours(total_secs)
+    return {
+        "user_id": query_user,
+        "year": y,
+        "entry_count": len(entries),
+        **accr,
+    }
+
+
+@api.patch("/clock/entries/{eid}")
+async def patch_clock_entry(eid: str, body: ClockEntryPatchIn, _=Depends(require_admin)):
+    """Admin override: edit clock_in, clock_out, note, or location of a clock entry."""
+    entry = await db.clock_entries.find_one({"id": eid})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    updates: Dict[str, Any] = {}
+    if body.clock_in is not None:
+        try:
+            cin = datetime.fromisoformat(body.clock_in.replace("Z", "+00:00"))
+            if cin.tzinfo is None:
+                cin = cin.replace(tzinfo=timezone.utc)
+            updates["clock_in"] = cin
+        except Exception:
+            raise HTTPException(status_code=400, detail="clock_in must be ISO 8601")
+    if body.clock_out is not None:
+        if body.clock_out == "":
+            updates["clock_out"] = None
+            updates["duration_seconds"] = 0
+        else:
+            try:
+                cout = datetime.fromisoformat(body.clock_out.replace("Z", "+00:00"))
+                if cout.tzinfo is None:
+                    cout = cout.replace(tzinfo=timezone.utc)
+                updates["clock_out"] = cout
+            except Exception:
+                raise HTTPException(status_code=400, detail="clock_out must be ISO 8601")
+    if body.note is not None:
+        updates["note"] = body.note
+    if body.location is not None:
+        updates["location"] = body.location
+    if not updates:
+        return serialize(entry)
+    # Re-derive duration_seconds if either timestamp present
+    merged = {**entry, **updates}
+    if merged.get("clock_in") and merged.get("clock_out"):
+        updates["duration_seconds"] = _entry_seconds(merged)
+    updates["edited_at"] = now_utc()
+    await db.clock_entries.update_one({"id": eid}, {"$set": updates})
+    doc = await db.clock_entries.find_one({"id": eid})
+    return serialize(doc)
+
+
+@api.delete("/clock/entries/{eid}")
+async def delete_clock_entry(eid: str, _=Depends(require_admin)):
+    res = await db.clock_entries.delete_one({"id": eid})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return {"ok": True}
+
+
+# ---------- Bank Holidays (Ireland pre-seeded; custom additions allowed) ----------
+# Statutory Ireland public holidays for 2025 & 2026 (Dept of Enterprise list).
+_IRELAND_BANK_HOLIDAYS: List[Dict[str, str]] = [
+    # 2025
+    {"date": "2025-01-01", "name": "New Year's Day"},
+    {"date": "2025-02-03", "name": "St Brigid's Day"},
+    {"date": "2025-03-17", "name": "St Patrick's Day"},
+    {"date": "2025-04-21", "name": "Easter Monday"},
+    {"date": "2025-05-05", "name": "May Day"},
+    {"date": "2025-06-02", "name": "June Bank Holiday"},
+    {"date": "2025-08-04", "name": "August Bank Holiday"},
+    {"date": "2025-10-27", "name": "October Bank Holiday"},
+    {"date": "2025-12-25", "name": "Christmas Day"},
+    {"date": "2025-12-26", "name": "St Stephen's Day"},
+    # 2026
+    {"date": "2026-01-01", "name": "New Year's Day"},
+    {"date": "2026-02-02", "name": "St Brigid's Day"},
+    {"date": "2026-03-17", "name": "St Patrick's Day"},
+    {"date": "2026-04-06", "name": "Easter Monday"},
+    {"date": "2026-05-04", "name": "May Day"},
+    {"date": "2026-06-01", "name": "June Bank Holiday"},
+    {"date": "2026-08-03", "name": "August Bank Holiday"},
+    {"date": "2026-10-26", "name": "October Bank Holiday"},
+    {"date": "2026-12-25", "name": "Christmas Day"},
+    {"date": "2026-12-26", "name": "St Stephen's Day"},
+]
+
+
+async def _seed_ireland_bank_holidays():
+    """Seed default Ireland statutory bank holidays the first time the endpoint is hit.
+    Custom additions persist alongside; we only insert dates not already in the collection.
+    """
+    existing = await db.bank_holidays.find({}, {"date": 1}).to_list(2000)
+    have = {d.get("date") for d in existing}
+    to_insert = []
+    for h in _IRELAND_BANK_HOLIDAYS:
+        if h["date"] in have:
+            continue
+        to_insert.append({
+            "id": str(uuid.uuid4()),
+            "date": h["date"],
+            "name": h["name"],
+            "hours": 8.0,
+            "country": "IE",
+            "custom": False,
+            "created_at": now_utc(),
+        })
+    if to_insert:
+        await db.bank_holidays.insert_many(to_insert)
+
+
+@api.get("/bank-holidays")
+async def list_bank_holidays(year: Optional[int] = None, _=Depends(get_current_user)):
+    await _seed_ireland_bank_holidays()
+    q: Dict[str, Any] = {}
+    if year:
+        q["date"] = {"$gte": f"{year}-01-01", "$lt": f"{year+1}-01-01"}
+    docs = await db.bank_holidays.find(q).sort("date", 1).to_list(500)
+    return [serialize(d) for d in docs]
+
+
+@api.post("/bank-holidays")
+async def add_bank_holiday(body: BankHolidayIn, _=Depends(require_admin)):
+    # Validate date
+    try:
+        datetime.fromisoformat(body.date)
+    except Exception:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    existing = await db.bank_holidays.find_one({"date": body.date})
+    if existing:
+        raise HTTPException(status_code=400, detail="Bank holiday already exists on that date")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "date": body.date,
+        "name": body.name,
+        "hours": float(body.hours or 8.0),
+        "country": "IE",
+        "custom": True,
+        "created_at": now_utc(),
+    }
+    await db.bank_holidays.insert_one(doc)
+    return serialize(doc)
+
+
+@api.delete("/bank-holidays/{bid}")
+async def delete_bank_holiday(bid: str, _=Depends(require_admin)):
+    res = await db.bank_holidays.delete_one({"id": bid})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Bank holiday not found")
+    return {"ok": True}
 
 
 # ----------------- Holidays -----------------

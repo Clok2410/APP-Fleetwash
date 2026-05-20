@@ -40,6 +40,9 @@ export default function AdminScreen() {
   const [pdfModalOpen, setPdfModalOpen] = useState(false);
   const [pdfAssignedIds, setPdfAssignedIds] = useState<string[]>([]); // empty = assign to ALL
   const [assignModalFor, setAssignModalFor] = useState<any>(null); // PDF template being assigned
+  const [editEntry, setEditEntry] = useState<any>(null); // clock entry being edited by admin
+  const [editIn, setEditIn] = useState("");
+  const [editOut, setEditOut] = useState("");
   const [depots, setDepots] = useState<any[]>([]);
   const [offsite, setOffsite] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -319,6 +322,56 @@ export default function AdminScreen() {
     if (cur.has(userId)) cur.delete(userId);
     else cur.add(userId);
     setAssignModalFor({ ...assignModalFor, assigned_user_ids: Array.from(cur) });
+  };
+
+  const openEditEntry = (entry: any) => {
+    setEditEntry(entry);
+    // Convert ISO timestamps to local "YYYY-MM-DDTHH:MM" for editing
+    const toLocal = (iso: string | null | undefined) => {
+      if (!iso) return "";
+      const d = new Date(iso);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+    setEditIn(toLocal(entry.clock_in));
+    setEditOut(toLocal(entry.clock_out));
+  };
+
+  const saveEditEntry = async () => {
+    if (!editEntry) return;
+    try {
+      const toIso = (local: string) =>
+        local ? new Date(local).toISOString() : "";
+      await api.patch(`/clock/entries/${editEntry.id}`, {
+        clock_in: editIn ? toIso(editIn) : undefined,
+        clock_out: editOut === "" ? "" : toIso(editOut),
+      });
+      setEditEntry(null);
+      await load();
+      Alert.alert("Saved", "Clock entry updated.");
+    } catch (e: any) {
+      Alert.alert("Failed", e.response?.data?.detail || "Try again");
+    }
+  };
+
+  const deleteEditEntry = async () => {
+    if (!editEntry) return;
+    Alert.alert("Delete entry?", "This removes the clock entry permanently.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await api.delete(`/clock/entries/${editEntry.id}`);
+            setEditEntry(null);
+            await load();
+          } catch (e: any) {
+            Alert.alert("Failed", e.response?.data?.detail || "Try again");
+          }
+        },
+      },
+    ]);
   };
 
   return (
@@ -814,12 +867,20 @@ export default function AdminScreen() {
                     <TouchableOpacity
                       testID={`map-${e.id}`}
                       onPress={() => openInMaps(e.lat, e.lng)}
-                      style={[styles.smBtn, { backgroundColor: colors.brand, width: 64, borderRadius: 14 }]}
+                      style={[styles.smBtn, { backgroundColor: colors.brand, width: 56, borderRadius: 14 }]}
                     >
                       <Feather name="map" size={14} color="#fff" />
                       <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 4 }}>Map</Text>
                     </TouchableOpacity>
                   )}
+                  <TouchableOpacity
+                    testID={`edit-entry-${e.id}`}
+                    onPress={() => openEditEntry(e)}
+                    style={[styles.smBtn, { backgroundColor: colors.brandSoft, width: 56, borderRadius: 14, marginLeft: 6 }]}
+                  >
+                    <Feather name="edit-2" size={14} color={colors.brand} />
+                    <Text style={{ color: colors.brand, fontSize: 11, fontWeight: "700", marginLeft: 4 }}>Edit</Text>
+                  </TouchableOpacity>
                 </View>
               ))
             )}
@@ -1374,6 +1435,62 @@ export default function AdminScreen() {
                 testID="assign-save"
                 style={[styles.modalBtn, { backgroundColor: colors.primary }]}
                 onPress={saveAssignment}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Edit / delete a clock entry (admin override) */}
+      <Modal visible={!!editEntry} transparent animationType="slide" onRequestClose={() => setEditEntry(null)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={typography.h3}>Edit Clock Entry</Text>
+            <Text style={[typography.small, { marginTop: 4, marginBottom: 12, color: colors.textMuted }]}>
+              {editEntry?.user_name} · {editEntry?.depot_name || "—"}
+            </Text>
+            <Text style={typography.label}>Clock-In (local time)</Text>
+            <TextInput
+              testID="edit-clock-in"
+              style={styles.input}
+              placeholder="YYYY-MM-DDTHH:MM"
+              value={editIn}
+              onChangeText={setEditIn}
+              placeholderTextColor={colors.textMuted}
+            />
+            <Text style={[typography.label, { marginTop: 8 }]}>Clock-Out (leave blank for open shift)</Text>
+            <TextInput
+              testID="edit-clock-out"
+              style={styles.input}
+              placeholder="YYYY-MM-DDTHH:MM"
+              value={editOut}
+              onChangeText={setEditOut}
+              placeholderTextColor={colors.textMuted}
+            />
+            <Text style={[typography.small, { marginTop: 8, color: colors.textMuted, fontSize: 11 }]}>
+              Tip: enter times in the format above (browser local time). Saving recalculates hours and accrual.
+            </Text>
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 14 }}>
+              <TouchableOpacity
+                testID="edit-delete"
+                style={[styles.modalBtn, { backgroundColor: "#FEE2E2" }]}
+                onPress={deleteEditEntry}
+              >
+                <Feather name="trash-2" size={14} color={colors.alert} />
+                <Text style={{ color: colors.alert, fontWeight: "700", marginLeft: 4 }}>Delete</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: colors.surface }]}
+                onPress={() => setEditEntry(null)}
+              >
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="edit-save"
+                style={[styles.modalBtn, { backgroundColor: colors.primary }]}
+                onPress={saveEditEntry}
               >
                 <Text style={{ color: "#fff", fontWeight: "700" }}>Save</Text>
               </TouchableOpacity>

@@ -24,6 +24,8 @@ export default function ProfileScreen() {
   const [requests, setRequests] = useState<any[]>([]);
   const [balance, setBalance] = useState<any>(null);
   const [history, setHistory] = useState<any[]>([]);
+  const [weekly, setWeekly] = useState<any>(null);
+  const [accrual, setAccrual] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [reqOpen, setReqOpen] = useState(false);
   const [start, setStart] = useState("");
@@ -44,14 +46,18 @@ export default function ProfileScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [r, b, h] = await Promise.all([
+      const [r, b, h, w, a] = await Promise.all([
         api.get("/holidays/requests"),
         api.get("/holidays/balance"),
         api.get("/clock/history"),
+        api.get("/clock/weekly-summary").catch(() => ({ data: null })),
+        api.get("/clock/accrual").catch(() => ({ data: null })),
       ]);
       setRequests(r.data);
       setBalance(b.data);
       setHistory(h.data.slice(0, 10));
+      setWeekly(w.data);
+      setAccrual(a.data);
     } catch {}
   }, []);
 
@@ -115,6 +121,75 @@ export default function ProfileScreen() {
             <Stat label="Total" value={balance.entitlement} />
             <Stat label="Used" value={balance.used} color={colors.alert} />
             <Stat label="Left" value={balance.remaining} color={colors.success} />
+          </View>
+        )}
+
+        {/* Time Clock card — weekly Mon→Sun total + holiday accrual */}
+        {weekly && (
+          <View style={styles.section} testID="time-clock-card">
+            <View style={styles.sectionHead}>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <Feather name="clock" size={16} color={colors.brand} />
+                <Text style={[typography.label, { marginLeft: 6 }]}>Time Clock</Text>
+              </View>
+              <Text style={[typography.small, { color: colors.textMuted }]}>
+                {weekly.week_start} → {weekly.week_end}
+              </Text>
+            </View>
+            <View style={styles.row3}>
+              <Stat label="This Week" value={`${weekly.total_hours}h`} color={colors.brand} />
+              <Stat
+                label="Breaks"
+                value={`${weekly.break_hours}h`}
+                color={colors.textMuted as any}
+              />
+              <Stat
+                label="Net"
+                value={`${weekly.net_hours}h`}
+                color={colors.success}
+              />
+            </View>
+            {/* Per-day bars */}
+            <View style={styles.weekBars}>
+              {weekly.days.map((d: any, i: number) => {
+                const max = Math.max(1, ...weekly.days.map((x: any) => x.hours || 0));
+                const pct = ((d.hours || 0) / max) * 100;
+                const labels = ["M", "T", "W", "T", "F", "S", "S"];
+                return (
+                  <View key={d.date} style={{ flex: 1, alignItems: "center" }}>
+                    <View style={styles.weekBarTrack}>
+                      <View
+                        style={[
+                          styles.weekBarFill,
+                          { height: `${pct}%`, backgroundColor: d.hours > 0 ? colors.brand : colors.border },
+                        ]}
+                      />
+                    </View>
+                    <Text style={[typography.small, { color: colors.textMuted, marginTop: 4 }]}>
+                      {labels[i]}
+                    </Text>
+                    <Text style={[typography.small, { fontSize: 10, fontWeight: "700", color: colors.primary }]}>
+                      {d.hours > 0 ? `${d.hours}h` : "—"}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+            {/* Accrual badge */}
+            {accrual && (
+              <View style={styles.accrualBadge}>
+                <Feather name="gift" size={14} color={colors.brand} />
+                <Text style={[typography.small, { marginLeft: 6, color: colors.primary, fontWeight: "600" }]}>
+                  Earned {accrual.accrued_holiday_hours}h holiday pay this year
+                </Text>
+                <Text style={[typography.small, { color: colors.textMuted, marginLeft: 4, fontSize: 11 }]}>
+                  ({accrual.net_hours}h net worked)
+                </Text>
+              </View>
+            )}
+            <Text style={[typography.small, { color: colors.textMuted, fontSize: 11, marginTop: 4 }]}>
+              Rule: 1h holiday per 3h worked, less 30min break per 8h shift.
+            </Text>
           </View>
         )}
 
@@ -494,6 +569,36 @@ const styles = StyleSheet.create({
   modeChipActive: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
+  },
+  weekBars: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    marginTop: 10,
+    paddingHorizontal: 4,
+  },
+  weekBarTrack: {
+    width: "70%",
+    height: 60,
+    backgroundColor: colors.surface,
+    borderRadius: 6,
+    justifyContent: "flex-end",
+    overflow: "hidden",
+  },
+  weekBarFill: {
+    width: "100%",
+    borderRadius: 6,
+    minHeight: 2,
+  },
+  accrualBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.brandSoft,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    marginTop: 12,
+    flexWrap: "wrap",
   },
   input: {
     height: 48,
