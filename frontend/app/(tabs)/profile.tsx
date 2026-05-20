@@ -30,6 +30,17 @@ export default function ProfileScreen() {
   const [end, setEnd] = useState("");
   const [reason, setReason] = useState("");
   const [type, setType] = useState<"annual" | "sick" | "unpaid">("annual");
+  const [mode, setMode] = useState<"single" | "range">("single");
+
+  // Count of days (inclusive) selected — 0 if nothing chosen
+  const dayCount = (() => {
+    if (!start) return 0;
+    const e = end || start;
+    const s = new Date(start + "T00:00:00");
+    const eD = new Date(e + "T00:00:00");
+    const ms = eD.getTime() - s.getTime();
+    return Math.max(1, Math.floor(ms / 86400000) + 1);
+  })();
 
   const load = useCallback(async () => {
     try {
@@ -51,12 +62,13 @@ export default function ProfileScreen() {
   );
 
   const submitRequest = async () => {
-    if (!start || !end) {
-      Alert.alert("Missing dates", "Please enter both start and end dates (YYYY-MM-DD)");
+    if (!start) {
+      Alert.alert("Pick a date", "Tap a date on the calendar to select your holiday.");
       return;
     }
+    const effectiveEnd = end || start; // single-day defaults end -> start
     try {
-      await api.post("/holidays/requests", { start_date: start, end_date: end, reason, type });
+      await api.post("/holidays/requests", { start_date: start, end_date: effectiveEnd, reason, type });
       setReqOpen(false);
       setStart("");
       setEnd("");
@@ -188,6 +200,8 @@ export default function ProfileScreen() {
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
             <Text style={typography.h3}>Request Holiday</Text>
+
+            {/* Type chips */}
             <View style={{ flexDirection: "row", gap: 8, marginTop: spacing.md }}>
               {(["annual", "sick", "unpaid"] as const).map((t) => (
                 <TouchableOpacity
@@ -201,22 +215,92 @@ export default function ProfileScreen() {
                 </TouchableOpacity>
               ))}
             </View>
-            <Text style={[typography.small, { marginTop: spacing.md, marginBottom: 6 }]}>
-              {start && end
-                ? `Selected: ${start} → ${end}`
-                : start
-                ? `Start: ${start}. Now tap an end date.`
-                : "Tap a start date, then an end date."}
+
+            {/* Single day / Date range toggle */}
+            <View style={{ flexDirection: "row", gap: 8, marginTop: spacing.md }}>
+              <TouchableOpacity
+                testID="mode-single"
+                onPress={() => {
+                  setMode("single");
+                  // Keep the chosen start if any; clear end so it's treated as single day
+                  setEnd("");
+                }}
+                style={[styles.modeChip, mode === "single" && styles.modeChipActive]}
+              >
+                <Feather
+                  name="calendar"
+                  size={14}
+                  color={mode === "single" ? "#fff" : colors.primary}
+                  style={{ marginRight: 6 }}
+                />
+                <Text
+                  style={{
+                    color: mode === "single" ? "#fff" : colors.primary,
+                    fontWeight: "600",
+                    fontSize: 13,
+                  }}
+                >
+                  Single day
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="mode-range"
+                onPress={() => setMode("range")}
+                style={[styles.modeChip, mode === "range" && styles.modeChipActive]}
+              >
+                <Feather
+                  name="calendar"
+                  size={14}
+                  color={mode === "range" ? "#fff" : colors.primary}
+                  style={{ marginRight: 6 }}
+                />
+                <Text
+                  style={{
+                    color: mode === "range" ? "#fff" : colors.primary,
+                    fontWeight: "600",
+                    fontSize: 13,
+                  }}
+                >
+                  Date range
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Selection summary */}
+            <Text
+              testID="holiday-summary"
+              style={[typography.small, { marginTop: spacing.md, marginBottom: 6 }]}
+            >
+              {!start
+                ? mode === "single"
+                  ? "Tap the day you want off."
+                  : "Tap a start date, then an end date."
+                : mode === "single"
+                ? `Requesting 1 day: ${start}`
+                : !end
+                ? `Start: ${start}. Now tap an end date (or switch to Single day).`
+                : `Requesting ${dayCount} day${dayCount === 1 ? "" : "s"}: ${start} → ${end}`}
             </Text>
+
             <View style={{ borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
               <Calendar
                 testID="holiday-calendar"
                 onDayPress={(d: any) => {
+                  if (mode === "single") {
+                    // One-tap selection: just set start, clear end
+                    setStart(d.dateString);
+                    setEnd("");
+                    return;
+                  }
+                  // Range mode: two-tap selection
                   if (!start || (start && end)) {
                     setStart(d.dateString);
                     setEnd("");
                   } else if (d.dateString < start) {
                     setStart(d.dateString);
+                  } else if (d.dateString === start) {
+                    // Tapping same day in range mode → treat as 1-day range
+                    setEnd(d.dateString);
                   } else {
                     setEnd(d.dateString);
                   }
@@ -224,7 +308,7 @@ export default function ProfileScreen() {
                 markingType="period"
                 markedDates={(() => {
                   const m: any = {};
-                  if (start && !end) {
+                  if (start && (mode === "single" || !end)) {
                     m[start] = { startingDay: true, endingDay: true, color: colors.primary, textColor: "#fff" };
                   } else if (start && end) {
                     const sD = new Date(start);
@@ -249,17 +333,20 @@ export default function ProfileScreen() {
                 }}
               />
             </View>
-            {start && end ? (
+
+            {start ? (
               <TouchableOpacity
+                testID="holiday-clear"
                 onPress={() => {
                   setStart("");
                   setEnd("");
                 }}
                 style={{ alignSelf: "flex-end", marginTop: 6 }}
               >
-                <Text style={{ color: colors.primary, fontWeight: "600", fontSize: 12 }}>Clear range</Text>
+                <Text style={{ color: colors.primary, fontWeight: "600", fontSize: 12 }}>Clear</Text>
               </TouchableOpacity>
             ) : null}
+
             <TextInput
               style={[styles.input, { height: 64, marginTop: spacing.sm }]}
               placeholder="Reason (optional)"
@@ -272,8 +359,18 @@ export default function ProfileScreen() {
               <TouchableOpacity style={[styles.modalBtn, { backgroundColor: colors.surface }]} onPress={() => setReqOpen(false)}>
                 <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity testID="submit-holiday" style={[styles.modalBtn, { backgroundColor: colors.primary }]} onPress={submitRequest}>
-                <Text style={{ color: "#fff", fontWeight: "700" }}>Submit</Text>
+              <TouchableOpacity
+                testID="submit-holiday"
+                style={[
+                  styles.modalBtn,
+                  { backgroundColor: start ? colors.primary : colors.border },
+                ]}
+                onPress={submitRequest}
+                disabled={!start}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>
+                  {start ? `Submit · ${dayCount} day${dayCount === 1 ? "" : "s"}` : "Submit"}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -383,6 +480,20 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: radius.pill,
     backgroundColor: colors.surface,
+  },
+  modeChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  modeChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
   },
   input: {
     height: 48,
