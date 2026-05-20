@@ -109,6 +109,21 @@ user_problem_statement: |
   shift swap/availability, and admin dashboard.
 
 backend:
+  - task: "Phase A2: Submissions Inbox + Mark Reviewed (GET /admin/submissions-inbox + PATCH review endpoints)"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "New admin endpoints. (1) GET /api/admin/submissions-inbox — unified list of form_submissions + pdf_form_submissions merged & sorted by created_at desc, capped at `limit` (max 1000). Query filters: template_id, user_id, from_date (YYYY-MM-DD inclusive), to_date (YYYY-MM-DD inclusive end-of-day), reviewed ('true'|'false'), kind ('form'|'pdf'|None). Returns serialised rows with shape: {id, kind, template_id, template_title, user_id, user_name, created_at, reviewed, reviewed_at, reviewed_by, reviewed_by_name, status, ai_summary}. Admin-only via require_admin. (2) PATCH /api/forms/submissions/{sid}/review (admin) body {reviewed: bool} — toggles reviewed flag on form_submissions; when set true, stamps reviewed_at, reviewed_by, reviewed_by_name; when set false, clears them. (3) PATCH /api/pdf-forms/submissions/{sid}/review (admin) — identical behaviour on pdf_form_submissions. Returns serialised inbox row. Validates dates with _validate_iso_date. Date range uses lexical ISO string compare. Frontend admin.tsx Forms tab fully redesigned with Inbox/Templates segmented control: Inbox shows filterable list with type/status/template/staff/date filters, each row has Mark Reviewed toggle + Download PDF button; Templates view preserves original Form/Checklist management."
+        - working: false
+          agent: "testing"
+          comment: "Phase A2 backend regression 59/60 via /app/inbox_test.py against the public proxy URL (admin@company.com / jane@company.com). PASSING: (A1-A4) admin GET /admin/submissions-inbox → 200 list; required-keys shape {id,kind,template_id,template_title,user_id,user_name,created_at,reviewed,reviewed_at,reviewed_by,reviewed_by_name,status,ai_summary} all present; kind ∈ {form,pdf}; sort created_at desc verified; staff → 403; unauth → 401. (B1-B6,B8-B9) kind=form filter → only forms (sid_form present, sid_pdf absent); kind=pdf → mirror; template_id filter scopes correctly; user_id=jane filter; from_date=2099 → empty; to_date=2000 → empty; reviewed=true correctly EXCLUDES the freshly-created sid_form/sid_pdf and only contains rows with reviewed=true; from_date=bad-date → 400. (C) Form review toggle: PATCH reviewed=true → 200 with reviewed=true, reviewed_by=admin_id, reviewed_by_name='Admin', reviewed_at populated, kind='form'; inbox?reviewed=true now includes sid_form; PATCH reviewed=false → 200 with reviewed=false and all three audit fields null; staff PATCH → 403; nonexistent → 404; unauth → 401. (D) PDF review toggle: PATCH reviewed=true → 200 with reviewed_by_name='Admin' and timestamp; inbox?kind=pdf&reviewed=true includes sid_pdf; PATCH back to false → 200 with nulls; staff → 403; nonexistent → 404. Cleanup DELETE form+pdf templates → 200.\n\nFAILING — CRITICAL DEFECT IN ?reviewed=false FILTER (B7): The Mongo query `q['reviewed'] = False` (line ~3222 server.py) only matches documents where the field is explicitly stored as False. Newly created form/pdf submissions are inserted WITHOUT a `reviewed` field at all (see /forms/submissions POST line ~1798-1808 and /pdf-forms/templates/{tid}/fill line ~3102 — neither stamps `reviewed:false` on insert). Result: filtering by reviewed=false silently EXCLUDES every never-reviewed submission. Verified against the live DB: of 12 inbox rows total, only 2 appear in reviewed=false (those 2 had been toggled true→false explicitly in prior tests); the other 10 never-reviewed submissions are dropped. Admin's primary use case — viewing the unreviewed inbox — is effectively broken: only docs that were previously marked reviewed and un-reviewed will surface. FIX OPTIONS: (a) on insert into form_submissions / pdf_form_submissions stamp `reviewed: False`, OR (b) change filter to `q['reviewed'] = {'$ne': True}` when reviewed='false' (matches both False and missing). Option (b) covers all legacy data without a migration. The reviewed=true filter is correct."
+
   - task: "Phase A1: PATCH /holidays/requests/{rid} — edit dates/reason/type"
     implemented: true
     working: true
@@ -491,12 +506,14 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Phase A1: PATCH /holidays/requests/{rid} — edit dates/reason/type"
+    - "Phase A2: Submissions Inbox + Mark Reviewed (GET /admin/submissions-inbox + PATCH review endpoints)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "testing"
+      message: "Phase A2 backend regression 59/60 via /app/inbox_test.py against public proxy URL. CRITICAL DEFECT in /admin/submissions-inbox?reviewed=false filter: Mongo query `q['reviewed']=False` doesn't match docs where the field is missing. Newly-created form_submissions / pdf_form_submissions are inserted WITHOUT a `reviewed` field, so the 'Unreviewed' admin view silently EXCLUDES every never-touched submission (verified: 10 of 12 inbox rows missing from reviewed=false response). All other Phase A2 behaviour passes: admin/staff/unauth role guards (403/401), template_id/user_id/kind/from_date/to_date filters work, bad-date → 400, PATCH /forms/submissions/{sid}/review and PATCH /pdf-forms/submissions/{sid}/review both correctly stamp/clear reviewed_at/reviewed_by/reviewed_by_name, 404 on nonexistent, 403 on staff, 401 on unauth, response row shape matches spec, sort created_at desc verified. FIX: in /api/admin/submissions-inbox (server.py ~line 3221), when reviewed='false' use `q['reviewed']={'$ne':True}` instead of `q['reviewed']=False`; reviewed='true' is correct as-is. Alternative: stamp `reviewed: False` on every insert in /forms/submissions and /pdf-forms/templates/{tid}/fill. Reviewed=true path already works correctly. Task marked working: false, needs_retesting: true."
     - agent: "testing"
       message: "Roster PDF import backend regression PASSED 43/43 via /app/roster_test.py against the public proxy URL. (A) Parse: real user roster PDF (166KB, 'Week 19 2026') → 200 in 18.6s with 28 rows, all rows valid 8-key string dicts, name matches include damien/kieran/caique/mark/nathan. Invalid base64 → 400 'Invalid PDF base64'; b64('hello') → 400 'Not a valid PDF'; staff /roster/parse → 403. (B) Publish: synthetic Jane payload → created=3/deleted=0/week_start=2027-06-07/week_end=2027-06-13/notified=[jane]; shifts persisted with titles {Site A,B,C}, end_at=null, start_at exactly 2027-06-07T06:30 / 2027-06-09T06:30 / 2027-06-11T06:30. (C) Re-publish policy 3a: same week with new days → deleted=3,created=2; only NEW A/NEW T remain; empty rows publish → deleted=2,created=0. (D) Edge cases: Tue auto-snaps to Monday ✓; bad date / 25:00 / 07:99 → 400; bogus user_id silently skipped (created=0); empty day cell and unknown 'funday' key skipped (only valid day inserted). (E) Auth: staff parse/publish → 403; unauth → 401. (F) Cleanup completed. 0 failures. Task marked working: true, needs_retesting: false. Safe for main agent to summarise and finish."
     - agent: "testing"

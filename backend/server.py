@@ -3175,6 +3175,117 @@ async def get_pdf_form_submission(sid: str, current=Depends(get_current_user)):
     return serialize(doc)
 
 
+# ----------------- Phase A2: Submissions Inbox + Reviewed toggle -----------------
+class ReviewToggleIn(BaseModel):
+    reviewed: bool
+
+
+def _serialize_inbox_row(d: Dict[str, Any], kind: str) -> Dict[str, Any]:
+    return {
+        "id": d.get("id"),
+        "kind": kind,  # 'form' | 'pdf'
+        "template_id": d.get("template_id"),
+        "template_title": d.get("template_title") or "",
+        "user_id": d.get("user_id"),
+        "user_name": d.get("user_name") or "",
+        "created_at": d.get("created_at"),
+        "reviewed": bool(d.get("reviewed", False)),
+        "reviewed_at": d.get("reviewed_at"),
+        "reviewed_by": d.get("reviewed_by"),
+        "reviewed_by_name": d.get("reviewed_by_name"),
+        "status": d.get("status"),
+        "ai_summary": d.get("ai_summary"),
+    }
+
+
+@api.get("/admin/submissions-inbox")
+async def admin_submissions_inbox(
+    template_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    from_date: Optional[str] = None,  # YYYY-MM-DD inclusive
+    to_date: Optional[str] = None,    # YYYY-MM-DD inclusive (end-of-day)
+    reviewed: Optional[str] = None,   # 'true'|'false'|None (all)
+    kind: Optional[str] = None,       # 'form'|'pdf'|None (both)
+    limit: int = 200,
+    _=Depends(require_admin),
+):
+    """Unified inbox of completed form & PDF submissions for admin review.
+    Filters: template_id, user_id, from_date/to_date (created_at), reviewed (true/false), kind.
+    Returns list sorted by created_at desc, capped at `limit` (max 1000)."""
+    # Build base query
+    q: Dict[str, Any] = {}
+    if template_id:
+        q["template_id"] = template_id
+    if user_id:
+        q["user_id"] = user_id
+    if reviewed in ("true", "false"):
+        q["reviewed"] = (reviewed == "true")
+    # Date range on created_at (string ISO; mongo lexical compare works for ISO 8601)
+    if from_date or to_date:
+        date_q: Dict[str, Any] = {}
+        if from_date:
+            _validate_iso_date(from_date, "from_date")
+            date_q["$gte"] = from_date  # matches 'YYYY-MM-DDT…'
+        if to_date:
+            _validate_iso_date(to_date, "to_date")
+            # inclusive: anything up to YYYY-MM-DDT23:59:59
+            date_q["$lte"] = f"{to_date}T23:59:59.999Z"
+        q["created_at"] = date_q
+    limit = max(1, min(int(limit or 200), 1000))
+    rows: List[Dict[str, Any]] = []
+    if kind in (None, "form"):
+        docs = await db.form_submissions.find(q).sort("created_at", -1).to_list(limit)
+        for d in docs:
+            rows.append(_serialize_inbox_row(d, "form"))
+    if kind in (None, "pdf"):
+        docs = await db.pdf_form_submissions.find(q).sort("created_at", -1).to_list(limit)
+        for d in docs:
+            rows.append(_serialize_inbox_row(d, "pdf"))
+    # Merge sort by created_at desc, then cap
+    rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return rows[:limit]
+
+
+@api.patch("/forms/submissions/{sid}/review")
+async def review_form_submission(sid: str, body: ReviewToggleIn, current=Depends(require_admin)):
+    """Admin toggles 'reviewed' flag on a regular form submission."""
+    doc = await db.form_submissions.find_one({"id": sid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    updates: Dict[str, Any] = {"reviewed": bool(body.reviewed)}
+    if body.reviewed:
+        updates["reviewed_at"] = now_utc()
+        updates["reviewed_by"] = current["id"]
+        updates["reviewed_by_name"] = current.get("name")
+    else:
+        updates["reviewed_at"] = None
+        updates["reviewed_by"] = None
+        updates["reviewed_by_name"] = None
+    await db.form_submissions.update_one({"id": sid}, {"$set": updates})
+    updated = await db.form_submissions.find_one({"id": sid})
+    return _serialize_inbox_row(updated, "form")
+
+
+@api.patch("/pdf-forms/submissions/{sid}/review")
+async def review_pdf_submission(sid: str, body: ReviewToggleIn, current=Depends(require_admin)):
+    """Admin toggles 'reviewed' flag on a PDF form submission."""
+    doc = await db.pdf_form_submissions.find_one({"id": sid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    updates: Dict[str, Any] = {"reviewed": bool(body.reviewed)}
+    if body.reviewed:
+        updates["reviewed_at"] = now_utc()
+        updates["reviewed_by"] = current["id"]
+        updates["reviewed_by_name"] = current.get("name")
+    else:
+        updates["reviewed_at"] = None
+        updates["reviewed_by"] = None
+        updates["reviewed_by_name"] = None
+    await db.pdf_form_submissions.update_one({"id": sid}, {"$set": updates})
+    updated = await db.pdf_form_submissions.find_one({"id": sid})
+    return _serialize_inbox_row(updated, "pdf")
+
+
 # ----------------- PDF Form Sessions (collaborative) -----------------
 @api.post("/pdf-forms/templates/{tid}/sessions")
 async def start_pdf_session(tid: str, body: PdfSessionStartIn, current=Depends(get_current_user)):

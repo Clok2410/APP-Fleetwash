@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -63,6 +63,17 @@ export default function AdminScreen() {
   const [hdEnd, setHdEnd] = useState("");
   const [hdReason, setHdReason] = useState("");
   const [hdType, setHdType] = useState<"annual" | "sick" | "unpaid">("annual");
+  // A2: Forms tab — Submissions Inbox
+  const [formsView, setFormsView] = useState<"inbox" | "templates">("inbox");
+  const [inbox, setInbox] = useState<any[]>([]);
+  const [inboxLoading, setInboxLoading] = useState(false);
+  const [fxTemplate, setFxTemplate] = useState<string>(""); // template_id filter
+  const [fxUser, setFxUser] = useState<string>(""); // user_id filter
+  const [fxFrom, setFxFrom] = useState<string>("");
+  const [fxTo, setFxTo] = useState<string>("");
+  const [fxReviewed, setFxReviewed] = useState<"all" | "true" | "false">("all");
+  const [fxKind, setFxKind] = useState<"all" | "form" | "pdf">("all");
+  const [inboxDownloading, setInboxDownloading] = useState<string | null>(null);
   const [depots, setDepots] = useState<any[]>([]);
   const [offsite, setOffsite] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -209,6 +220,14 @@ export default function AdminScreen() {
     }, [load])
   );
 
+  // A2: Auto-load inbox when entering Forms→Inbox view or when filters change
+  useEffect(() => {
+    if (tab === "forms" && formsView === "inbox") {
+      loadInbox();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, formsView, fxTemplate, fxUser, fxFrom, fxTo, fxReviewed, fxKind]);
+
   const decideHoliday = async (id: string, decision: string) => {
     await api.post(`/holidays/requests/${id}/decision`, null, { params: { decision } });
     await load();
@@ -274,6 +293,143 @@ export default function AdminScreen() {
       ]
     );
   };
+
+  // A2: Submissions Inbox
+  const loadInbox = useCallback(async () => {
+    setInboxLoading(true);
+    try {
+      const params: any = {};
+      if (fxTemplate) params.template_id = fxTemplate;
+      if (fxUser) params.user_id = fxUser;
+      if (fxFrom) params.from_date = fxFrom;
+      if (fxTo) params.to_date = fxTo;
+      if (fxReviewed !== "all") params.reviewed = fxReviewed;
+      if (fxKind !== "all") params.kind = fxKind;
+      const { data } = await api.get("/admin/submissions-inbox", { params });
+      setInbox(Array.isArray(data) ? data : []);
+    } catch (e: any) {
+      // Silent fail; admins will see empty list
+      setInbox([]);
+    } finally {
+      setInboxLoading(false);
+    }
+  }, [fxTemplate, fxUser, fxFrom, fxTo, fxReviewed, fxKind]);
+
+  const toggleReviewed = async (row: any) => {
+    const nextReviewed = !row.reviewed;
+    const endpoint =
+      row.kind === "pdf"
+        ? `/pdf-forms/submissions/${row.id}/review`
+        : `/forms/submissions/${row.id}/review`;
+    try {
+      // Optimistic update
+      setInbox((prev) => prev.map((r) => (r.id === row.id ? { ...r, reviewed: nextReviewed } : r)));
+      await api.patch(endpoint, { reviewed: nextReviewed });
+      await loadInbox();
+    } catch (e: any) {
+      // Revert
+      setInbox((prev) => prev.map((r) => (r.id === row.id ? { ...r, reviewed: !nextReviewed } : r)));
+      Alert.alert("Failed", e.response?.data?.detail || "Could not update reviewed status");
+    }
+  };
+
+  const downloadSubmission = async (row: any) => {
+    setInboxDownloading(row.id);
+    try {
+      if (row.kind === "pdf") {
+        // Fetch full doc to get filled_pdf_base64
+        const { data } = await api.get(`/pdf-forms/submissions/${row.id}`);
+        const b64: string | undefined = data?.filled_pdf_base64;
+        if (!b64) {
+          Alert.alert("No PDF", "This submission has no filled PDF yet.");
+          return;
+        }
+        const filename = `${(row.template_title || "submission").replace(/[^a-z0-9_-]+/gi, "_")}_${(row.user_name || "user").replace(/[^a-z0-9]+/gi, "_")}.pdf`;
+        if (Platform.OS === "web") {
+          const byteChars = atob(b64);
+          const byteNums = new Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) byteNums[i] = byteChars.charCodeAt(i);
+          const blob = new Blob([new Uint8Array(byteNums)], { type: "application/pdf" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } else {
+          const FileSystem = await import("expo-file-system");
+          const Sharing = await import("expo-sharing");
+          const path = `${FileSystem.cacheDirectory}${filename}`;
+          await FileSystem.writeAsStringAsync(path, b64, { encoding: FileSystem.EncodingType.Base64 });
+          if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(path);
+        }
+      } else {
+        // Regular form — backend renders PDF via /forms/submissions/{sid}/pdf
+        const filename = `${(row.template_title || "submission").replace(/[^a-z0-9_-]+/gi, "_")}_${(row.user_name || "user").replace(/[^a-z0-9]+/gi, "_")}.pdf`;
+        if (Platform.OS === "web") {
+          // Use auth header in fetch since StreamingResponse needs Bearer
+          const token = (await import("@react-native-async-storage/async-storage")).default;
+          const t = await token.getItem("access_token");
+          const url = `/api/forms/submissions/${row.id}/pdf`;
+          const resp = await fetch(url, { headers: { Authorization: `Bearer ${t}` } });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const blob = await resp.blob();
+          const objUrl = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = objUrl;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+        } else {
+          // Native: download to cache then share
+          const FileSystem = await import("expo-file-system");
+          const Sharing = await import("expo-sharing");
+          const AsyncStorage = (await import("@react-native-async-storage/async-storage")).default;
+          const t = await AsyncStorage.getItem("access_token");
+          const baseURL = (api.defaults?.baseURL || "").replace(/\/$/, "");
+          const target = `${FileSystem.cacheDirectory}${filename}`;
+          const result = await FileSystem.downloadAsync(
+            `${baseURL}/forms/submissions/${row.id}/pdf`,
+            target,
+            { headers: { Authorization: `Bearer ${t}` } }
+          );
+          if (result.status === 200 && (await Sharing.isAvailableAsync())) {
+            await Sharing.shareAsync(result.uri);
+          }
+        }
+      }
+    } catch (e: any) {
+      Alert.alert("Download failed", String(e?.message || e));
+    } finally {
+      setInboxDownloading(null);
+    }
+  };
+
+  const inboxTemplateOptions = React.useMemo(() => {
+    const map = new Map<string, { id: string; title: string; kind: "form" | "pdf" }>();
+    inbox.forEach((r) => {
+      if (r.template_id && !map.has(r.template_id)) {
+        map.set(r.template_id, { id: r.template_id, title: r.template_title || "Untitled", kind: r.kind });
+      }
+    });
+    // Also include all known templates so filtering can show ones without submissions yet
+    (allTemplates || []).forEach((t: any) => {
+      if (!map.has(t.id)) map.set(t.id, { id: t.id, title: t.title, kind: "form" });
+    });
+    (pdfTemplates || []).forEach((t: any) => {
+      if (!map.has(t.id)) map.set(t.id, { id: t.id, title: t.title, kind: "pdf" });
+    });
+    return Array.from(map.values()).sort((a, b) => a.title.localeCompare(b.title));
+  }, [inbox, allTemplates, pdfTemplates]);
+
+  const inboxUnreviewedCount = React.useMemo(
+    () => inbox.filter((r) => !r.reviewed).length,
+    [inbox]
+  );
 
   const createShift = async () => {
     if (!sUser || !sTitle || !sStart || !sEnd) return Alert.alert("Missing info", "All fields required");
@@ -1178,41 +1334,316 @@ export default function AdminScreen() {
 
         {tab === "forms" && (
           <>
-            <TouchableOpacity testID="open-form-builder" style={styles.addCta} onPress={() => setFormModal(true)}>
-              <Feather name="plus" size={16} color="#fff" />
-              <Text style={styles.addCtaText}>Create Form / Checklist</Text>
-            </TouchableOpacity>
-            <Text style={[typography.small, { marginTop: 8, marginBottom: 4 }]}>
-              Build forms or daily checklists (e.g. truck wash). Tap Stats on a checklist to see washed/missed analytics.
-            </Text>
-            {allTemplates.map((t) => (
-              <View key={t.id} style={styles.card} testID={`tpl-${t.id}`}>
-                <View style={[styles.smBtn, { backgroundColor: t.kind === "checklist" ? colors.brand : colors.surface, width: 36, height: 36, borderRadius: 18 }]}>
-                  <Feather name={t.kind === "checklist" ? "check-square" : "file-text"} size={16} color={t.kind === "checklist" ? "#fff" : colors.primary} />
+            {/* A2: Inbox / Templates segmented control */}
+            <View style={styles.formsSegmentRow}>
+              <TouchableOpacity
+                testID="forms-view-inbox"
+                style={[styles.formsSegBtn, formsView === "inbox" && styles.formsSegBtnActive]}
+                onPress={() => setFormsView("inbox")}
+              >
+                <Feather name="inbox" size={14} color={formsView === "inbox" ? "#fff" : colors.primary} />
+                <Text style={[styles.formsSegBtnText, formsView === "inbox" && { color: "#fff" }]}>
+                  Inbox{inboxUnreviewedCount > 0 ? ` · ${inboxUnreviewedCount} new` : ""}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="forms-view-templates"
+                style={[styles.formsSegBtn, formsView === "templates" && styles.formsSegBtnActive]}
+                onPress={() => setFormsView("templates")}
+              >
+                <Feather name="layout" size={14} color={formsView === "templates" ? "#fff" : colors.primary} />
+                <Text style={[styles.formsSegBtnText, formsView === "templates" && { color: "#fff" }]}>
+                  Templates
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {formsView === "inbox" ? (
+              <>
+                {/* Filter bar */}
+                <View style={styles.inboxFilterBar}>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                    {/* Kind filter */}
+                    <View style={styles.filterGroup}>
+                      <Text style={styles.filterLabel}>Type</Text>
+                      <View style={{ flexDirection: "row", gap: 4 }}>
+                        {(["all", "form", "pdf"] as const).map((k) => (
+                          <TouchableOpacity
+                            key={k}
+                            testID={`inbox-kind-${k}`}
+                            onPress={() => setFxKind(k)}
+                            style={[styles.filterChip, fxKind === k && styles.filterChipActive]}
+                          >
+                            <Text style={[styles.filterChipText, fxKind === k && { color: "#fff" }]}>
+                              {k === "all" ? "All" : k === "form" ? "Form" : "PDF"}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+                    {/* Reviewed filter */}
+                    <View style={styles.filterGroup}>
+                      <Text style={styles.filterLabel}>Status</Text>
+                      <View style={{ flexDirection: "row", gap: 4 }}>
+                        {([
+                          ["all", "All"],
+                          ["false", "Unreviewed"],
+                          ["true", "Reviewed"],
+                        ] as const).map(([v, l]) => (
+                          <TouchableOpacity
+                            key={v}
+                            testID={`inbox-reviewed-${v}`}
+                            onPress={() => setFxReviewed(v)}
+                            style={[styles.filterChip, fxReviewed === v && styles.filterChipActive]}
+                          >
+                            <Text style={[styles.filterChipText, fxReviewed === v && { color: "#fff" }]}>
+                              {l}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+                  </View>
+                  {/* Template, Staff, Date filters */}
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                    {/* Template picker */}
+                    <View style={[styles.filterGroup, { flex: 1, minWidth: 180 }]}>
+                      <Text style={styles.filterLabel}>Form template</Text>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 4 }}>
+                        <TouchableOpacity
+                          testID="inbox-tpl-all"
+                          onPress={() => setFxTemplate("")}
+                          style={[styles.filterChip, !fxTemplate && styles.filterChipActive]}
+                        >
+                          <Text style={[styles.filterChipText, !fxTemplate && { color: "#fff" }]}>All</Text>
+                        </TouchableOpacity>
+                        {inboxTemplateOptions.map((o) => (
+                          <TouchableOpacity
+                            key={o.id}
+                            testID={`inbox-tpl-${o.id}`}
+                            onPress={() => setFxTemplate(fxTemplate === o.id ? "" : o.id)}
+                            style={[styles.filterChip, fxTemplate === o.id && styles.filterChipActive]}
+                          >
+                            <Feather
+                              name={o.kind === "pdf" ? "file-text" : "check-square"}
+                              size={11}
+                              color={fxTemplate === o.id ? "#fff" : colors.textMuted}
+                              style={{ marginRight: 4 }}
+                            />
+                            <Text
+                              numberOfLines={1}
+                              style={[styles.filterChipText, fxTemplate === o.id && { color: "#fff" }, { maxWidth: 160 }]}
+                            >
+                              {o.title}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </View>
+                    {/* Staff picker */}
+                    <View style={[styles.filterGroup, { flex: 1, minWidth: 180 }]}>
+                      <Text style={styles.filterLabel}>Staff</Text>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 4 }}>
+                        <TouchableOpacity
+                          testID="inbox-user-all"
+                          onPress={() => setFxUser("")}
+                          style={[styles.filterChip, !fxUser && styles.filterChipActive]}
+                        >
+                          <Text style={[styles.filterChipText, !fxUser && { color: "#fff" }]}>All</Text>
+                        </TouchableOpacity>
+                        {users.filter((u: any) => u.role !== "admin").map((u: any) => (
+                          <TouchableOpacity
+                            key={u.id}
+                            testID={`inbox-user-${u.id}`}
+                            onPress={() => setFxUser(fxUser === u.id ? "" : u.id)}
+                            style={[styles.filterChip, fxUser === u.id && styles.filterChipActive]}
+                          >
+                            <Text style={[styles.filterChipText, fxUser === u.id && { color: "#fff" }]}>
+                              {u.name}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  </View>
+                  {/* Date range */}
+                  <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.filterLabel}>From (YYYY-MM-DD)</Text>
+                      <TextInput
+                        testID="inbox-from"
+                        style={styles.filterInput}
+                        value={fxFrom}
+                        onChangeText={setFxFrom}
+                        placeholder="2026-01-01"
+                        placeholderTextColor={colors.textMuted}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.filterLabel}>To (YYYY-MM-DD)</Text>
+                      <TextInput
+                        testID="inbox-to"
+                        style={styles.filterInput}
+                        value={fxTo}
+                        onChangeText={setFxTo}
+                        placeholder="2026-12-31"
+                        placeholderTextColor={colors.textMuted}
+                      />
+                    </View>
+                    <TouchableOpacity
+                      testID="inbox-clear-filters"
+                      onPress={() => {
+                        setFxTemplate(""); setFxUser(""); setFxFrom(""); setFxTo("");
+                        setFxReviewed("all"); setFxKind("all");
+                      }}
+                      style={{
+                        alignSelf: "flex-end",
+                        height: 40,
+                        paddingHorizontal: 14,
+                        borderRadius: radius.pill,
+                        backgroundColor: colors.surface,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexDirection: "row",
+                        gap: 4,
+                      }}
+                    >
+                      <Feather name="x" size={13} color={colors.textMuted} />
+                      <Text style={{ fontSize: 12, fontWeight: "600", color: colors.textMuted }}>Clear</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontWeight: "700", color: colors.primary }}>{t.title}</Text>
-                  <Text style={typography.small}>
-                    {t.kind === "checklist"
-                      ? `${(t.checklist_items || []).length} items · target ${t.target_percent || 100}%`
-                      : `${(t.fields || []).length} fields`}
+
+                {/* Submissions list */}
+                {inboxLoading ? (
+                  <Text style={[typography.small, { marginTop: 16, textAlign: "center", color: colors.textMuted }]}>
+                    Loading submissions…
                   </Text>
-                </View>
-                {t.kind === "checklist" && (
-                  <TouchableOpacity
-                    testID={`stats-${t.id}`}
-                    style={[styles.smBtn, { backgroundColor: colors.brand, width: 64, borderRadius: 14 }]}
-                    onPress={() => setStatsTpl(t)}
-                  >
-                    <Feather name="bar-chart-2" size={14} color="#fff" />
-                    <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 4 }}>Stats</Text>
-                  </TouchableOpacity>
+                ) : inbox.length === 0 ? (
+                  <View style={{ alignItems: "center", paddingVertical: 32 }}>
+                    <Feather name="inbox" size={48} color={colors.textMuted} />
+                    <Text style={[typography.small, { marginTop: 8, color: colors.textMuted }]}>
+                      No submissions match your filters.
+                    </Text>
+                  </View>
+                ) : (
+                  inbox.map((row) => (
+                    <View key={`${row.kind}-${row.id}`} style={[styles.card, !row.reviewed && styles.inboxCardUnreviewed]} testID={`inbox-row-${row.id}`}>
+                      <View
+                        style={[
+                          styles.smBtn,
+                          {
+                            backgroundColor: row.kind === "pdf" ? "#FEE2E2" : colors.brandSoft,
+                            width: 36,
+                            height: 36,
+                            borderRadius: 18,
+                          },
+                        ]}
+                      >
+                        <Feather
+                          name={row.kind === "pdf" ? "file-text" : "check-square"}
+                          size={16}
+                          color={row.kind === "pdf" ? "#B91C1C" : colors.brand}
+                        />
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 10 }}>
+                        <Text style={{ fontWeight: "700", color: colors.primary }}>{row.template_title || "Untitled form"}</Text>
+                        <Text style={typography.small}>
+                          <Feather name="user" size={11} color={colors.textMuted} /> {row.user_name || "Unknown"} ·{" "}
+                          <Feather name="clock" size={11} color={colors.textMuted} />{" "}
+                          {row.created_at ? new Date(row.created_at).toLocaleString() : "—"}
+                        </Text>
+                        {row.reviewed && row.reviewed_by_name && (
+                          <Text style={[typography.small, { marginTop: 2, color: "#0F766E", fontWeight: "600" }]}>
+                            <Feather name="check-circle" size={11} color="#0F766E" /> Reviewed by {row.reviewed_by_name}
+                            {row.reviewed_at ? ` · ${new Date(row.reviewed_at).toLocaleDateString()}` : ""}
+                          </Text>
+                        )}
+                      </View>
+                      <TouchableOpacity
+                        testID={`inbox-review-${row.id}`}
+                        onPress={() => toggleReviewed(row)}
+                        style={[
+                          styles.reviewedToggle,
+                          row.reviewed ? styles.reviewedToggleOn : styles.reviewedToggleOff,
+                        ]}
+                      >
+                        <Feather
+                          name={row.reviewed ? "check-circle" : "circle"}
+                          size={13}
+                          color={row.reviewed ? "#fff" : colors.textMuted}
+                        />
+                        <Text
+                          style={[
+                            { fontSize: 11, fontWeight: "700", marginLeft: 4 },
+                            { color: row.reviewed ? "#fff" : colors.textMuted },
+                          ]}
+                        >
+                          {row.reviewed ? "Reviewed" : "Mark reviewed"}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        testID={`inbox-download-${row.id}`}
+                        onPress={() => downloadSubmission(row)}
+                        disabled={inboxDownloading === row.id}
+                        style={[
+                          styles.smBtn,
+                          {
+                            backgroundColor: colors.brand,
+                            width: 40,
+                            height: 40,
+                            borderRadius: 20,
+                            marginLeft: 6,
+                            opacity: inboxDownloading === row.id ? 0.5 : 1,
+                          },
+                        ]}
+                      >
+                        <Feather name="download" size={15} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                  ))
                 )}
-                <TouchableOpacity onPress={async () => { await api.delete(`/forms/templates/${t.id}`); await load(); }} style={{ marginLeft: 8 }}>
-                  <Feather name="trash-2" size={14} color={colors.alert} />
+              </>
+            ) : (
+              <>
+                {/* Templates management — original Forms tab content */}
+                <TouchableOpacity testID="open-form-builder" style={styles.addCta} onPress={() => setFormModal(true)}>
+                  <Feather name="plus" size={16} color="#fff" />
+                  <Text style={styles.addCtaText}>Create Form / Checklist</Text>
                 </TouchableOpacity>
-              </View>
-            ))}
+                <Text style={[typography.small, { marginTop: 8, marginBottom: 4 }]}>
+                  Build forms or daily checklists (e.g. truck wash). Tap Stats on a checklist to see washed/missed analytics.
+                </Text>
+                {allTemplates.map((t) => (
+                  <View key={t.id} style={styles.card} testID={`tpl-${t.id}`}>
+                    <View style={[styles.smBtn, { backgroundColor: t.kind === "checklist" ? colors.brand : colors.surface, width: 36, height: 36, borderRadius: 18 }]}>
+                      <Feather name={t.kind === "checklist" ? "check-square" : "file-text"} size={16} color={t.kind === "checklist" ? "#fff" : colors.primary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontWeight: "700", color: colors.primary }}>{t.title}</Text>
+                      <Text style={typography.small}>
+                        {t.kind === "checklist"
+                          ? `${(t.checklist_items || []).length} items · target ${t.target_percent || 100}%`
+                          : `${(t.fields || []).length} fields`}
+                      </Text>
+                    </View>
+                    {t.kind === "checklist" && (
+                      <TouchableOpacity
+                        testID={`stats-${t.id}`}
+                        style={[styles.smBtn, { backgroundColor: colors.brand, width: 64, borderRadius: 14 }]}
+                        onPress={() => setStatsTpl(t)}
+                      >
+                        <Feather name="bar-chart-2" size={14} color="#fff" />
+                        <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 4 }}>Stats</Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity onPress={async () => { await api.delete(`/forms/templates/${t.id}`); await load(); }} style={{ marginLeft: 8 }}>
+                      <Feather name="trash-2" size={14} color={colors.alert} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </>
+            )}
           </>
         )}
 
@@ -2574,6 +3005,70 @@ const styles = StyleSheet.create({
   userRow: { padding: 10, borderRadius: radius.md, backgroundColor: colors.surface, marginBottom: 4 },
   userRowActive: { backgroundColor: colors.brandSoft, borderWidth: 1, borderColor: colors.brand },
   typeChip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.pill, backgroundColor: colors.surface },
+
+  // ===== A2: Forms Submissions Inbox =====
+  formsSegmentRow: { flexDirection: "row", gap: 6, marginBottom: 12 },
+  formsSegBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+    gap: 6,
+  },
+  formsSegBtnActive: { backgroundColor: colors.primary },
+  formsSegBtnText: { fontWeight: "700", fontSize: 13, color: colors.primary },
+  inboxFilterBar: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: radius.lg,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  filterGroup: { flexShrink: 1 },
+  filterLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: colors.textMuted,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  filterChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  filterChipActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  filterChipText: { fontSize: 11, fontWeight: "600", color: colors.textSecondary },
+  filterInput: {
+    height: 36,
+    backgroundColor: "#fff",
+    borderRadius: radius.md,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    fontSize: 13,
+    color: colors.textPrimary,
+  },
+  reviewedToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+  },
+  reviewedToggleOn: { backgroundColor: "#0F766E", borderColor: "#0F766E" },
+  reviewedToggleOff: { backgroundColor: "#fff", borderColor: colors.border },
+  inboxCardUnreviewed: { borderLeftWidth: 3, borderLeftColor: colors.brand },
 
   // ===== Desktop layout (Connecteam-style) =====
   deskRoot: { flex: 1, flexDirection: "row", backgroundColor: "#F6F8FB" },
