@@ -47,6 +47,15 @@ export default function AdminScreen() {
   // Drag-and-drop reassignment (web/desktop only)
   const [dragShiftId, setDragShiftId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  // Roster PDF import
+  const [rosterOpen, setRosterOpen] = useState(false);
+  const [rosterFile, setRosterFile] = useState<{ name: string; base64: string } | null>(null);
+  const [rosterParsing, setRosterParsing] = useState(false);
+  const [rosterPublishing, setRosterPublishing] = useState(false);
+  const [rosterRows, setRosterRows] = useState<any[]>([]); // [{name, mon, tue, ..., user_id?}]
+  const [rosterWeekStart, setRosterWeekStart] = useState(""); // YYYY-MM-DD
+  const [rosterStartTime, setRosterStartTime] = useState("06:30");
+  const [rosterNotify, setRosterNotify] = useState(true);
   const [depots, setDepots] = useState<any[]>([]);
   const [offsite, setOffsite] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -399,6 +408,99 @@ export default function AdminScreen() {
     } finally {
       setDragShiftId(null);
       setDropTargetId(null);
+    }
+  };
+
+  // ---- Roster PDF import ----
+  const pickRosterPdf = async () => {
+    try {
+      const DocumentPicker = require("expo-document-picker");
+      const FileSystem = require("expo-file-system");
+      const res = await DocumentPicker.getDocumentAsync({
+        type: "application/pdf",
+        copyToCacheDirectory: true,
+      });
+      if (res.canceled) return;
+      const asset = (res.assets && res.assets[0]) || res;
+      const uri = asset.uri || asset.file?.uri;
+      const name = asset.name || "roster.pdf";
+      let b64: string;
+      if (Platform.OS === "web" && asset.file) {
+        const ab = await asset.file.arrayBuffer();
+        let bin = "";
+        const bytes = new Uint8Array(ab);
+        for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+        b64 = global.btoa(bin);
+      } else {
+        b64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      }
+      setRosterFile({ name, base64: b64 });
+    } catch (e: any) {
+      Alert.alert("Pick PDF failed", String(e?.message || e));
+    }
+  };
+
+  const parseRoster = async () => {
+    if (!rosterFile) return Alert.alert("Pick a PDF first");
+    setRosterParsing(true);
+    try {
+      const { data } = await api.post("/roster/parse", { pdf_base64: rosterFile.base64 });
+      setRosterRows((data.rows || []).map((r: any) => ({ ...r, user_id: null })));
+      if (!data.count) Alert.alert("No rows found", "The AI couldn't extract any staff rows.");
+    } catch (e: any) {
+      Alert.alert("Parse failed", e.response?.data?.detail || "Try again");
+    } finally {
+      setRosterParsing(false);
+    }
+  };
+
+  const updateRosterUser = (idx: number, userId: string | null) => {
+    setRosterRows((prev) => prev.map((r, i) => (i === idx ? { ...r, user_id: userId } : r)));
+  };
+
+  const updateRosterCell = (idx: number, day: string, value: string) => {
+    setRosterRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [day]: value } : r)));
+  };
+
+  const publishRoster = async () => {
+    if (!rosterWeekStart || !/^\d{4}-\d{2}-\d{2}$/.test(rosterWeekStart)) {
+      return Alert.alert("Week start required", "Enter the Monday date as YYYY-MM-DD");
+    }
+    const mapped = rosterRows.filter((r) => r.user_id);
+    if (!mapped.length) return Alert.alert("Nothing to publish", "Map at least one row to a staff member.");
+    setRosterPublishing(true);
+    try {
+      const payload = {
+        week_start: rosterWeekStart,
+        default_start_time: rosterStartTime,
+        notify: rosterNotify,
+        rows: mapped.map((r: any) => ({
+          user_id: r.user_id,
+          days: {
+            mon: r.mon || "",
+            tue: r.tue || "",
+            wed: r.wed || "",
+            thu: r.thu || "",
+            fri: r.fri || "",
+            sat: r.sat || "",
+            sun: r.sun || "",
+          },
+        })),
+      };
+      const { data } = await api.post("/roster/publish", payload);
+      Alert.alert(
+        "Roster published",
+        `${data.created} shifts created · ${data.deleted} replaced · ${data.notified_user_ids.length} staff notified.`,
+      );
+      setRosterOpen(false);
+      setRosterFile(null);
+      setRosterRows([]);
+      setRosterWeekStart("");
+      await load();
+    } catch (e: any) {
+      Alert.alert("Publish failed", e.response?.data?.detail || "Try again");
+    } finally {
+      setRosterPublishing(false);
     }
   };
 
@@ -786,10 +888,20 @@ export default function AdminScreen() {
 
         {tab === "shifts" && (
           <>
-            <TouchableOpacity style={styles.addCta} onPress={() => setShiftModal(true)}>
-              <Feather name="plus" size={16} color="#fff" />
-              <Text style={styles.addCtaText}>Assign New Shift</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <TouchableOpacity style={[styles.addCta, { flex: 1 }]} onPress={() => setShiftModal(true)}>
+                <Feather name="plus" size={16} color="#fff" />
+                <Text style={styles.addCtaText}>Assign New Shift</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="import-roster-btn"
+                style={[styles.addCta, { flex: 1, backgroundColor: colors.brand }]}
+                onPress={() => setRosterOpen(true)}
+              >
+                <Feather name="upload" size={16} color="#fff" />
+                <Text style={styles.addCtaText}>Import Roster PDF</Text>
+              </TouchableOpacity>
+            </View>
 
             {/* Pending swap requests */}
             {swaps.filter((s) => s.status === "pending").length > 0 && (
@@ -1938,6 +2050,191 @@ export default function AdminScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Roster PDF import (Schedule) */}
+      <Modal visible={rosterOpen} transparent animationType="slide" onRequestClose={() => setRosterOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={[styles.modalCard, { maxHeight: "95%", width: "94%", maxWidth: 720 }]}>
+            <Text style={typography.h3}>Import Roster PDF</Text>
+            <Text style={[typography.small, { color: colors.textMuted, marginTop: 2, marginBottom: 8 }]}>
+              Upload a roster PDF — the AI extracts the staff × day grid, you map names → app users and set a start time, then publish.
+            </Text>
+
+            {!rosterFile && (
+              <TouchableOpacity testID="pick-roster-pdf" onPress={pickRosterPdf} style={styles.rosterPickBtn}>
+                <Feather name="upload-cloud" size={22} color={colors.primary} />
+                <Text style={{ fontWeight: "700", color: colors.primary, marginTop: 6 }}>
+                  Tap to pick a PDF
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {rosterFile && rosterRows.length === 0 && (
+              <View style={styles.rosterPickBtn}>
+                <Feather name="file-text" size={22} color={colors.success} />
+                <Text style={{ fontWeight: "700", color: colors.primary, marginTop: 6 }} numberOfLines={1}>
+                  {rosterFile.name}
+                </Text>
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+                  <TouchableOpacity onPress={() => setRosterFile(null)} style={[styles.modalBtn, { backgroundColor: colors.surface }]}>
+                    <Text style={{ color: colors.primary, fontWeight: "700" }}>Re-pick</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    testID="parse-roster"
+                    onPress={parseRoster}
+                    disabled={rosterParsing}
+                    style={[styles.modalBtn, { backgroundColor: colors.brand, opacity: rosterParsing ? 0.6 : 1 }]}
+                  >
+                    <Text style={{ color: "#fff", fontWeight: "700" }}>
+                      {rosterParsing ? "Parsing with AI…" : "Parse with AI"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {rosterRows.length > 0 && (
+              <>
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 10, marginBottom: 6 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={typography.label}>Monday of the roster week</Text>
+                    <TextInput
+                      testID="roster-week-start"
+                      style={styles.input}
+                      value={rosterWeekStart}
+                      onChangeText={setRosterWeekStart}
+                      placeholder="YYYY-MM-DD"
+                      placeholderTextColor={colors.textMuted}
+                    />
+                  </View>
+                  <View style={{ width: 110 }}>
+                    <Text style={typography.label}>Start time</Text>
+                    <TextInput
+                      testID="roster-start-time"
+                      style={styles.input}
+                      value={rosterStartTime}
+                      onChangeText={setRosterStartTime}
+                      placeholder="HH:MM"
+                      placeholderTextColor={colors.textMuted}
+                    />
+                  </View>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setRosterNotify((v) => !v)}
+                  style={{ flexDirection: "row", alignItems: "center", marginBottom: 6 }}
+                >
+                  <View
+                    style={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: 4,
+                      borderWidth: 2,
+                      borderColor: rosterNotify ? colors.brand : colors.border,
+                      backgroundColor: rosterNotify ? colors.brand : "transparent",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      marginRight: 8,
+                    }}
+                  >
+                    {rosterNotify ? <Feather name="check" size={14} color="#fff" /> : null}
+                  </View>
+                  <Text style={{ color: colors.primary, fontWeight: "600", fontSize: 13 }}>
+                    Notify each staff member when published
+                  </Text>
+                </TouchableOpacity>
+
+                <Text style={[typography.small, { color: colors.textMuted, marginTop: 4, marginBottom: 4 }]}>
+                  {rosterRows.length} rows parsed. Map a staff user for each row you want to publish; rows with no user are skipped.
+                </Text>
+                <ScrollView nestedScrollEnabled style={{ maxHeight: 350, borderRadius: 8, borderWidth: 1, borderColor: colors.border }}>
+                  {rosterRows.map((r, idx) => (
+                    <View key={idx} style={styles.rosterRow}>
+                      <View style={{ flex: 1.4 }}>
+                        <Text style={{ fontWeight: "700", color: colors.primary, fontSize: 13 }} numberOfLines={1}>
+                          {r.name}
+                        </Text>
+                        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 2 }}>
+                          {(["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const).map((d) =>
+                            r[d] ? (
+                              <Text key={d} style={styles.rosterDayPill}>
+                                {d.toUpperCase()} · {r[d]}
+                              </Text>
+                            ) : null,
+                          )}
+                        </View>
+                      </View>
+                      <View style={{ width: 140, marginLeft: 8 }}>
+                        <ScrollView
+                          horizontal={false}
+                          nestedScrollEnabled
+                          style={{ maxHeight: 100, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }}
+                        >
+                          <TouchableOpacity
+                            onPress={() => updateRosterUser(idx, null)}
+                            style={[styles.userPick, !r.user_id && { backgroundColor: colors.brandSoft }]}
+                          >
+                            <Text style={{ fontSize: 11, color: r.user_id ? colors.textMuted : colors.brand, fontWeight: "600" }}>
+                              — Skip row —
+                            </Text>
+                          </TouchableOpacity>
+                          {users
+                            .filter((u) => u.role !== "admin")
+                            .map((u) => (
+                              <TouchableOpacity
+                                key={u.id}
+                                testID={`roster-map-${idx}-${u.id}`}
+                                onPress={() => updateRosterUser(idx, u.id)}
+                                style={[styles.userPick, r.user_id === u.id && { backgroundColor: colors.brand }]}
+                              >
+                                <Text
+                                  style={{
+                                    fontSize: 11,
+                                    color: r.user_id === u.id ? "#fff" : colors.primary,
+                                    fontWeight: "600",
+                                  }}
+                                  numberOfLines={1}
+                                >
+                                  {u.name}
+                                </Text>
+                              </TouchableOpacity>
+                            ))}
+                        </ScrollView>
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+              </>
+            )}
+
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 14 }}>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: colors.surface }]}
+                onPress={() => {
+                  setRosterOpen(false);
+                  setRosterFile(null);
+                  setRosterRows([]);
+                  setRosterWeekStart("");
+                }}
+              >
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Close</Text>
+              </TouchableOpacity>
+              {rosterRows.length > 0 && (
+                <TouchableOpacity
+                  testID="publish-roster"
+                  style={[styles.modalBtn, { backgroundColor: colors.success, opacity: rosterPublishing ? 0.6 : 1 }]}
+                  onPress={publishRoster}
+                  disabled={rosterPublishing}
+                >
+                  <Feather name="send" size={14} color="#fff" />
+                  <Text style={{ color: "#fff", fontWeight: "700", marginLeft: 4 }}>
+                    {rosterPublishing ? "Publishing…" : "Publish to Staff"}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
     );
   }
@@ -2129,5 +2426,39 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: colors.brandSoft,
+  },
+  rosterPickBtn: {
+    borderWidth: 1,
+    borderStyle: "dashed" as any,
+    borderColor: colors.brand,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    paddingVertical: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 4,
+  },
+  rosterRow: {
+    flexDirection: "row",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    alignItems: "center",
+  },
+  rosterDayPill: {
+    fontSize: 10,
+    color: colors.primary,
+    backgroundColor: colors.surface,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    overflow: "hidden",
+  },
+  userPick: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
 });

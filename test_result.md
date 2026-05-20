@@ -109,6 +109,21 @@ user_problem_statement: |
   shift swap/availability, and admin dashboard.
 
 backend:
+  - task: "Roster PDF import: AI parse + publish to staff schedules"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Two new admin endpoints. (1) POST /api/roster/parse — admin uploads a roster PDF as base64. Backend extracts text via pypdf and sends to LlmChat (anthropic claude-sonnet-4-5-20250929 via emergentintegrations + EMERGENT_LLM_KEY from /app/backend/.env). The LLM returns strict JSON: {rows:[{name, mon, tue, wed, thu, fri, sat, sun}]} where each row is a staff person/pair with their day-cell assignment string (verbatim from the PDF). Empty/HOL/DAYOFF cells return as empty strings. Pure-notes rows (like 'please lock gate after washing' or phone numbers) are skipped by the LLM. (2) POST /api/roster/publish — body {week_start (Mon YYYY-MM-DD), default_start_time (HH:MM), rows:[{user_id, days:{mon:'', tue:'', ...}}], notify (bool)}. Creates Shift records (one per non-empty day cell), `start_at` = week_start + day_offset at default_start_time, `end_at` = None (no end time per requirement 1a), `title`/`location` = the cell text, `imported_from_roster=true`. Policy 3a: before inserting, DELETE all existing shifts in the Mon→Sun week that are tagged imported_from_roster=true (avoids touching manually-created shifts). If notify=true, sends a push 'New shifts published — Your roster for Week of YYYY-MM-DD is now available' to each affected user_id. week_start is snapped back to Monday if a non-Monday date is given. Local smoke test with the user's actual 'Week 19 2026' roster PDF: parse returned 27 rows (e.g. 'Kieran, Matheus & Caique', 'Damien', 'Micheal & Nathan', etc.) with correct day mappings; publish with 1 mapped user created 3 shifts, re-publish deleted and recreated 3 (policy 3a verified), notify list populated."
+        - working: true
+          agent: "testing"
+          comment: "Roster PDF import backend regression PASSED 43/43 via /app/roster_test.py against the public proxy URL (admin@company.com / jane@company.com). (A) Parse real roster PDF: downloaded user's 'Week 19 2026' PDF (166330 bytes), POST /api/roster/parse with pdf_base64 → 200 in 18.6s (well within 90s budget); response has rows (list) and count=28 (>0); every row has all 8 string keys {name, mon, tue, wed, thu, fri, sat, sun} with no nulls; name substring match found 5 expected first names {damien, kieran, caique, mark, nathan}. A7 invalid base64 → 400 with detail='Invalid PDF base64' (contains 'invalid'). A8 b64 of 'hello' → 400 with detail='Not a valid PDF'. A9 staff /roster/parse → 403. (B) Publish synthetic roster: POST /roster/publish {week_start:'2027-06-07', default_start_time:'06:30', notify:true, rows:[{user_id:jane,days:{mon:'Site A',wed:'Site B',fri:'Site C'}}, {user_id:null,days:{mon:'skipped'}}]} → 200 with created=3, deleted=0, week_start='2027-06-07', week_end='2027-06-13', notified_user_ids=[jane_id]; GET /api/shifts?all=true confirms exactly 3 imported_from_roster shifts for Jane with titles={Site A,Site B,Site C}, end_at=null, start_at contains T06:30; specific dates verified: Site A=2027-06-07T06:30, Site B=2027-06-09T06:30, Site C=2027-06-11T06:30. (C) Re-publish (policy 3a): same week with rows={mon:'NEW A',tue:'NEW T'} → deleted=3, created=2; GET confirms only 2 NEW shifts remain (Site A/B/C gone), titles={NEW A,NEW T}; subsequent empty rows publish → deleted=2, created=0 (week now empty of imported shifts). (D) Edge cases: D1 week_start='2027-06-08' (Tue) auto-snaps to '2027-06-07' (Mon) ✓; D2 week_start='bad-date' → 400; D3 default_start_time='25:00' → 400; D4 default_start_time='07:99' → 400; D5 row with user_id='bogus-user-xyz' → 200 created=0, no error; D6+D7 row with empty-string day and unknown 'funday' key, plus valid tue='Real Tue' → created=1 (empty+unknown skipped, only tue inserted). (E) Auth: staff /roster/parse → 403; staff /roster/publish → 403; unauth /roster/parse → 401; unauth /roster/publish → 401. (F) Cleanup: deleted 1 leftover roster shift for Jane. All 43 assertions PASS, 0 failures. Task fully working per spec."
+
   - task: "Phase 6: Push status / push test / shift drag-and-drop reassign"
     implemented: true
     working: true
@@ -445,12 +460,15 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Roster PDF import: AI parse + publish to staff schedules"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "testing"
+      message: "Roster PDF import backend regression PASSED 43/43 via /app/roster_test.py against the public proxy URL. (A) Parse: real user roster PDF (166KB, 'Week 19 2026') → 200 in 18.6s with 28 rows, all rows valid 8-key string dicts, name matches include damien/kieran/caique/mark/nathan. Invalid base64 → 400 'Invalid PDF base64'; b64('hello') → 400 'Not a valid PDF'; staff /roster/parse → 403. (B) Publish: synthetic Jane payload → created=3/deleted=0/week_start=2027-06-07/week_end=2027-06-13/notified=[jane]; shifts persisted with titles {Site A,B,C}, end_at=null, start_at exactly 2027-06-07T06:30 / 2027-06-09T06:30 / 2027-06-11T06:30. (C) Re-publish policy 3a: same week with new days → deleted=3,created=2; only NEW A/NEW T remain; empty rows publish → deleted=2,created=0. (D) Edge cases: Tue auto-snaps to Monday ✓; bad date / 25:00 / 07:99 → 400; bogus user_id silently skipped (created=0); empty day cell and unknown 'funday' key skipped (only valid day inserted). (E) Auth: staff parse/publish → 403; unauth → 401. (F) Cleanup completed. 0 failures. Task marked working: true, needs_retesting: false. Safe for main agent to summarise and finish."
     - agent: "testing"
       message: "Phase 6 backend regression PASSED 39/39 via /app/phase6_test.py against the public proxy URL. (A) Push token + status: GET /users/me/push-status returns correct shape {registered,token_preview,updated_at}; POST /push-token clears with token=''; valid 'ExponentPushToken[...]' sets token and stamps push_token_updated_at; token_preview is EXACTLY 'ExponentPushTo…-DDDD]' (first 14 + ellipsis + last 6 chars); 'junk' rejected with 400 'Invalid Expo push token'. (B) Push test: staff /push-test {} targets self (jane); staff {user_id:admin} backend correctly IGNORES the param and still targets jane; admin can target any user; nonexistent user → 404 'User not found'; Expo gateway accepted the well-formatted fake token and returned 200 (sent=true). (C) Shift reassign: admin PATCH /shifts/{id}/reassign updates user_id+user_name+reassigned_at; idempotent same-user PATCH → 200 (returns shift unchanged, no error); nonexistent shift → 404 'Shift not found'; bogus user_id → 404 'Target user not found'; staff → 403; cleanup restore works. (D) Auth guards: unauth GET /push-status, POST /push-test, PATCH /reassign all → 401. 0 failures. Task marked working: true, needs_retesting: false. Safe for main agent to summarise and finish."
 

@@ -1079,6 +1079,203 @@ async def cancel_holiday(rid: str, current=Depends(get_current_user)):
 
 
 # ----------------- Shifts / Scheduler -----------------
+class RosterParseIn(BaseModel):
+    pdf_base64: str
+
+
+class RosterPublishRow(BaseModel):
+    user_id: Optional[str] = None  # mapped staff user id (if None, the row is skipped)
+    days: Dict[str, str] = {}  # {"Mon":"Tirlan Navan", "Tue":"", ...}; empty = no shift
+
+
+class RosterPublishIn(BaseModel):
+    week_start: str  # YYYY-MM-DD (Monday)
+    default_start_time: str  # "HH:MM" (24h)
+    rows: List[RosterPublishRow]
+    notify: bool = True
+
+
+@api.post("/roster/parse")
+async def parse_roster(body: RosterParseIn, _=Depends(require_admin)):
+    """Use the Emergent LLM key to extract a structured roster grid from a PDF.
+
+    Returns: {rows: [{name, mon, tue, wed, thu, fri, sat, sun}]} — each row represents a
+    single staff person (or staff pair) and their day-by-day assignment text. The admin
+    will review and map these to actual user accounts before publishing.
+    """
+    import base64
+    try:
+        pdf_bytes = base64.b64decode(body.pdf_base64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid PDF base64")
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Not a valid PDF")
+
+    # Extract text from the PDF for the LLM context
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        text_chunks: List[str] = []
+        for p in reader.pages:
+            try:
+                text_chunks.append(p.extract_text() or "")
+            except Exception:
+                continue
+        raw_text = "\n\n".join(text_chunks)[:18000]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read PDF: {e}")
+
+    if not raw_text.strip():
+        raise HTTPException(status_code=400, detail="PDF appears to be empty/scanned (no extractable text)")
+
+    # Ask LLM to extract structured roster
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        system = (
+            "You extract employee work rosters from messy Google Sheets PDFs. "
+            "Output STRICT JSON only — no prose, no markdown fence, just JSON.\n"
+            "Schema: {\"rows\": [ {\"name\": \"first names of staff in this row (may be a pair like 'Kieran & Caique')\", \"mon\":\"...\", \"tue\":\"...\", \"wed\":\"...\", \"thu\":\"...\", \"fri\":\"...\", \"sat\":\"...\", \"sun\":\"...\"} ]}.\n"
+            "Rules:\n"
+            "- Each row in OUTPUT corresponds to a STAFF row in the roster — i.e. a person or pair name on the left, with cells per day-of-week.\n"
+            "- The day-cell value is the LOCATION / JOB / NOTE assigned to that staff for that day (verbatim string from the PDF cell).\n"
+            "- Use empty string \"\" when the cell is blank or DAYOFF/HOL.\n"
+            "- Lowercase day keys: mon, tue, wed, thu, fri, sat, sun.\n"
+            "- IGNORE pure-notes rows that are not staff (e.g. 'Please lock gate after washing', '087 9222661', or rows that are job-location-only without a staff name on the left).\n"
+            "- If a row has a pair like 'Kieran & Caique' or 'Mark, Nathan & Andrew', keep it as one row with that name — the admin will assign it to one user and we'll duplicate to others later.\n"
+            "- Return ONLY the JSON object. No explanatory text."
+        )
+        chat = LlmChat(
+            api_key=os.environ["EMERGENT_LLM_KEY"],
+            session_id=f"roster-parse-{uuid.uuid4().hex[:8]}",
+            system_message=system,
+        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+        resp = await chat.send_message(UserMessage(text=raw_text))
+        # The model may wrap in ```json — strip
+        s = resp.strip()
+        if s.startswith("```"):
+            s = s.split("\n", 1)[1] if "\n" in s else s
+            if s.endswith("```"):
+                s = s[: -3]
+            s = s.strip()
+            if s.lower().startswith("json"):
+                s = s[4:].strip()
+        import json as _json
+        parsed = _json.loads(s)
+        rows = parsed.get("rows", []) if isinstance(parsed, dict) else []
+        # Normalize empty strings; ensure each row has all day keys
+        out_rows = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            name = (r.get("name") or "").strip()
+            if not name:
+                continue
+            out_rows.append({
+                "name": name,
+                "mon": (r.get("mon") or "").strip(),
+                "tue": (r.get("tue") or "").strip(),
+                "wed": (r.get("wed") or "").strip(),
+                "thu": (r.get("thu") or "").strip(),
+                "fri": (r.get("fri") or "").strip(),
+                "sat": (r.get("sat") or "").strip(),
+                "sun": (r.get("sun") or "").strip(),
+            })
+        return {"rows": out_rows, "count": len(out_rows)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Roster LLM parse failed")
+        raise HTTPException(status_code=500, detail=f"AI parse failed: {str(e)[:200]}")
+
+
+@api.post("/roster/publish")
+async def publish_roster(body: RosterPublishIn, current=Depends(require_admin)):
+    """Create shifts for each (user, day) pair in the roster. Replaces any existing
+    shifts in the same Mon→Sun week (policy 3a). Sends push notifications if notify=true.
+    Returns: {created, deleted, week_start, notified_user_ids}."""
+    try:
+        mon = datetime.fromisoformat(body.week_start).replace(tzinfo=timezone.utc)
+    except Exception:
+        raise HTTPException(status_code=400, detail="week_start must be YYYY-MM-DD")
+    if mon.weekday() != 0:
+        # Snap back to Monday
+        mon = mon - timedelta(days=mon.weekday())
+    next_mon = mon + timedelta(days=7)
+    # Validate default start time
+    try:
+        hh, mm = body.default_start_time.split(":")
+        start_hh, start_mm = int(hh), int(mm)
+        assert 0 <= start_hh <= 23 and 0 <= start_mm <= 59
+    except Exception:
+        raise HTTPException(status_code=400, detail="default_start_time must be HH:MM")
+
+    # Policy 3a: replace existing shifts in this week that were created by roster import.
+    # We tag new shifts with imported_from_roster=true to make this surgical.
+    del_res = await db.shifts.delete_many({
+        "start_at": {"$gte": mon, "$lt": next_mon},
+        "imported_from_roster": True,
+    })
+
+    # Day keys → offset from Monday
+    day_offset = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+    created: List[Dict[str, Any]] = []
+    notified_ids: set = set()
+    for row in body.rows:
+        if not row.user_id:
+            continue
+        user = await db.users.find_one({"id": row.user_id})
+        if not user:
+            continue
+        for day_key, label in (row.days or {}).items():
+            label = (label or "").strip()
+            if not label:
+                continue
+            off = day_offset.get(day_key.lower())
+            if off is None:
+                continue
+            day_dt = mon + timedelta(days=off)
+            start_at = day_dt.replace(hour=start_hh, minute=start_mm)
+            shift = {
+                "id": str(uuid.uuid4()),
+                "user_id": row.user_id,
+                "user_name": user.get("name"),
+                "title": label,
+                "location": label,
+                "start_at": start_at,
+                "end_at": None,  # No end time unless explicit (per requirement 1a)
+                "recurring": False,
+                "imported_from_roster": True,
+                "created_by": current["id"],
+                "created_at": now_utc(),
+            }
+            await db.shifts.insert_one(shift)
+            created.append(serialize(shift))
+            notified_ids.add(row.user_id)
+
+    # Notify each affected user
+    if body.notify and notified_ids:
+        week_label = f"Week of {mon.strftime('%Y-%m-%d')}"
+        for uid in notified_ids:
+            try:
+                await notify(
+                    uid,
+                    "New shifts published",
+                    f"Your roster for {week_label} is now available.",
+                    "shift",
+                    None,
+                )
+            except Exception:
+                pass
+
+    return {
+        "created": len(created),
+        "deleted": del_res.deleted_count,
+        "week_start": mon.strftime("%Y-%m-%d"),
+        "week_end": (next_mon - timedelta(days=1)).strftime("%Y-%m-%d"),
+        "notified_user_ids": list(notified_ids),
+    }
+
+
 @api.post("/shifts")
 async def create_shift(body: ShiftIn, _=Depends(require_admin)):
     user = await db.users.find_one({"id": body.user_id})
