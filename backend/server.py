@@ -1831,8 +1831,102 @@ async def save_push_token(body: PushTokenIn, current=Depends(get_current_user)):
     tok = (body.token or "").strip()
     if tok and not tok.startswith(("ExponentPushToken[", "ExpoPushToken[")):
         raise HTTPException(status_code=400, detail="Invalid Expo push token")
-    await db.users.update_one({"id": current["id"]}, {"$set": {"expo_push_token": tok or None}})
+    await db.users.update_one(
+        {"id": current["id"]},
+        {"$set": {"expo_push_token": tok or None, "push_token_updated_at": now_utc()}},
+    )
     return {"ok": True}
+
+
+@api.get("/users/me/push-status")
+async def push_status(current=Depends(get_current_user)):
+    """Quick diagnostic endpoint — staff can see whether their push token is registered."""
+    u = await db.users.find_one({"id": current["id"]}, {"expo_push_token": 1, "push_token_updated_at": 1})
+    tok = (u or {}).get("expo_push_token")
+    preview = None
+    if tok:
+        # Show first 14 + last 6 chars only (token is ~50 chars long)
+        preview = f"{tok[:14]}…{tok[-6:]}" if len(tok) > 24 else tok
+    return {
+        "registered": bool(tok),
+        "token_preview": preview,
+        "updated_at": (u or {}).get("push_token_updated_at"),
+    }
+
+
+class PushTestIn(BaseModel):
+    user_id: Optional[str] = None  # admin can target any user; staff is always self
+    title: Optional[str] = "Test push"
+    body: Optional[str] = "If you see this, push delivery is working ✅"
+
+
+@api.post("/users/push-test")
+async def send_push_test(body: PushTestIn, current=Depends(get_current_user)):
+    """Send a test push. Staff can send only to themselves. Admin can send to any user.
+    Returns whether the push was attempted and whether the target had a registered token."""
+    target_id = (
+        body.user_id
+        if (body.user_id and current.get("role") == "admin")
+        else current["id"]
+    )
+    target = await db.users.find_one({"id": target_id}, {"expo_push_token": 1, "name": 1, "email": 1})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    tok = target.get("expo_push_token")
+    if not tok:
+        return {
+            "sent": False,
+            "reason": "no_token",
+            "target_id": target_id,
+            "target_name": target.get("name"),
+        }
+    try:
+        await _send_expo_push([tok], body.title or "Test push", body.body or "Test", {"kind": "test"})
+        return {
+            "sent": True,
+            "target_id": target_id,
+            "target_name": target.get("name"),
+        }
+    except Exception as e:
+        return {"sent": False, "reason": "send_error", "detail": str(e)[:160]}
+
+
+class ShiftReassignIn(BaseModel):
+    user_id: str  # new assignee
+
+
+@api.patch("/shifts/{sid}/reassign")
+async def reassign_shift(sid: str, body: ShiftReassignIn, _=Depends(require_admin)):
+    """Admin drag-and-drop reassignment: change a shift's assignee."""
+    shift = await db.shifts.find_one({"id": sid})
+    if not shift:
+        raise HTTPException(status_code=404, detail="Shift not found")
+    new_user = await db.users.find_one({"id": body.user_id})
+    if not new_user:
+        raise HTTPException(status_code=404, detail="Target user not found")
+    if shift.get("user_id") == body.user_id:
+        return serialize(shift)
+    await db.shifts.update_one(
+        {"id": sid},
+        {"$set": {
+            "user_id": body.user_id,
+            "user_name": new_user.get("name"),
+            "reassigned_at": now_utc(),
+        }},
+    )
+    # Notify the new assignee (best-effort)
+    try:
+        await notify(
+            body.user_id,
+            "New shift assigned",
+            f"{shift.get('title') or 'Shift'} {shift.get('start_at','')[:16]}",
+            "shift",
+            sid,
+        )
+    except Exception:
+        pass
+    doc = await db.shifts.find_one({"id": sid})
+    return serialize(doc)
 
 
 @api.get("/notifications")

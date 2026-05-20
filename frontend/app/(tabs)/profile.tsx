@@ -9,6 +9,7 @@ import {
   Modal,
   TextInput,
   RefreshControl,
+  Platform,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
@@ -28,6 +29,7 @@ export default function ProfileScreen() {
   const [accrual, setAccrual] = useState<any>(null);
   const [eligibility, setEligibility] = useState<any>(null);
   const [profile, setProfile] = useState<any>(null);
+  const [pushStatus, setPushStatus] = useState<any>(null);
   const [editProfileOpen, setEditProfileOpen] = useState(false);
   const [pName, setPName] = useState("");
   const [pEmail, setPEmail] = useState("");
@@ -54,7 +56,7 @@ export default function ProfileScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [r, b, h, w, a, e, m] = await Promise.all([
+      const [r, b, h, w, a, e, m, ps] = await Promise.all([
         api.get("/holidays/requests"),
         api.get("/holidays/balance"),
         api.get("/clock/history"),
@@ -62,6 +64,7 @@ export default function ProfileScreen() {
         api.get("/clock/accrual").catch(() => ({ data: null })),
         api.get("/users/me/eligibility").catch(() => ({ data: null })),
         api.get("/auth/me").catch(() => ({ data: null })),
+        api.get("/users/me/push-status").catch(() => ({ data: null })),
       ]);
       setRequests(r.data);
       setBalance(b.data);
@@ -70,6 +73,7 @@ export default function ProfileScreen() {
       setAccrual(a.data);
       setEligibility(e.data);
       setProfile(m.data);
+      setPushStatus(ps.data);
     } catch {}
   }, []);
 
@@ -98,6 +102,28 @@ export default function ProfileScreen() {
       setEditProfileOpen(false);
       await load();
       Alert.alert("Saved", "Your profile has been updated.");
+    } catch (e: any) {
+      Alert.alert("Failed", e.response?.data?.detail || "Try again");
+    }
+  };
+
+  const sendTestPush = async () => {
+    try {
+      const { data } = await api.post("/users/push-test", {
+        title: "StaffHub test",
+        body: "If you see this on your device, push delivery works ✅",
+      });
+      if (data.sent) {
+        Alert.alert("Sent", "A test notification was dispatched. Check your device.");
+      } else if (data.reason === "no_token") {
+        Alert.alert(
+          "Not registered",
+          "Open the app on a real device and grant notification permission to register a push token.",
+        );
+      } else {
+        Alert.alert("Failed", data.detail || "Push could not be sent.");
+      }
+      await load();
     } catch (e: any) {
       Alert.alert("Failed", e.response?.data?.detail || "Try again");
     }
@@ -241,6 +267,59 @@ export default function ProfileScreen() {
                   : `Part-time — ${eligibility.hours_last_5_weeks}h in last 5 weeks (need ${eligibility.bank_holiday_threshold_hours}h)`
               }
             />
+          </View>
+        )}
+
+        {/* Notifications / push status card */}
+        {pushStatus && (
+          <View style={styles.section} testID="push-card">
+            <View style={styles.sectionHead}>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <Feather name="bell" size={16} color={colors.brand} />
+                <Text style={[typography.label, { marginLeft: 6 }]}>Notifications</Text>
+              </View>
+              <View
+                style={{
+                  paddingHorizontal: 8,
+                  paddingVertical: 4,
+                  borderRadius: 999,
+                  backgroundColor: pushStatus.registered ? "#DCFCE7" : colors.surface,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 10,
+                    fontWeight: "700",
+                    color: pushStatus.registered ? colors.success : colors.textMuted,
+                  }}
+                >
+                  {pushStatus.registered ? "REGISTERED" : "NOT REGISTERED"}
+                </Text>
+              </View>
+            </View>
+            {pushStatus.registered ? (
+              <>
+                <Text style={[typography.small, { color: colors.textMuted, fontSize: 11 }]}>
+                  Push token: {pushStatus.token_preview}
+                </Text>
+                <TouchableOpacity
+                  testID="send-test-push"
+                  onPress={sendTestPush}
+                  style={[styles.testPushBtn, { marginTop: 10 }]}
+                >
+                  <Feather name="send" size={14} color="#fff" />
+                  <Text style={{ color: "#fff", fontWeight: "700", marginLeft: 6 }}>
+                    Send Test Push
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <Text style={[typography.small, { color: colors.textMuted }]}>
+                {Platform.OS === "web"
+                  ? "Push notifications work only on the iOS / Android app. Sign in on a real device and allow notifications to register your token."
+                  : "Open the app on a real device and grant notification permission to register your token."}
+              </Text>
+            )}
           </View>
         )}
 
@@ -905,6 +984,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 3,
     marginTop: 4,
+  },
+  testPushBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 38,
+    borderRadius: radius.pill,
+    backgroundColor: colors.brand,
+    alignSelf: "flex-start",
+    paddingHorizontal: 16,
   },
   addBtn: {
     flexDirection: "row",

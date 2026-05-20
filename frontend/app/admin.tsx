@@ -44,6 +44,9 @@ export default function AdminScreen() {
   const [editEntry, setEditEntry] = useState<any>(null); // clock entry being edited by admin
   const [editIn, setEditIn] = useState("");
   const [editOut, setEditOut] = useState("");
+  // Drag-and-drop reassignment (web/desktop only)
+  const [dragShiftId, setDragShiftId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [depots, setDepots] = useState<any[]>([]);
   const [offsite, setOffsite] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -384,6 +387,18 @@ export default function AdminScreen() {
       Alert.alert("Saved", "Clock entry updated.");
     } catch (e: any) {
       Alert.alert("Failed", e.response?.data?.detail || "Try again");
+    }
+  };
+
+  const reassignShift = async (shiftId: string, newUserId: string) => {
+    try {
+      await api.patch(`/shifts/${shiftId}/reassign`, { user_id: newUserId });
+      await load();
+    } catch (e: any) {
+      Alert.alert("Reassign failed", e.response?.data?.detail || "Try again");
+    } finally {
+      setDragShiftId(null);
+      setDropTargetId(null);
     }
   };
 
@@ -777,12 +792,74 @@ export default function AdminScreen() {
             )}
 
             <Text style={[typography.label, { marginTop: 8 }]}>All Shifts</Text>
+            {isDesktop && (
+              <View style={styles.dropZoneStrip} testID="reassign-zone">
+                <Text style={[typography.small, { color: colors.textMuted, fontWeight: "600", fontSize: 11, marginRight: 8 }]}>
+                  REASSIGN BY DRAG →
+                </Text>
+                {users.filter((u) => u.role !== "admin").map((u) => {
+                  const active = dropTargetId === u.id;
+                  return (
+                    <View
+                      key={u.id}
+                      testID={`drop-user-${u.id}`}
+                      // @ts-ignore — RN-Web passes DOM props through View
+                      onDragOver={(e: any) => {
+                        e.preventDefault();
+                        if (dropTargetId !== u.id) setDropTargetId(u.id);
+                      }}
+                      onDragLeave={() => {
+                        if (dropTargetId === u.id) setDropTargetId(null);
+                      }}
+                      onDrop={(e: any) => {
+                        e.preventDefault();
+                        const sid =
+                          (e.dataTransfer && e.dataTransfer.getData("text/plain")) || dragShiftId;
+                        if (sid) reassignShift(sid, u.id);
+                      }}
+                      style={[styles.dropChip, active && styles.dropChipActive]}
+                    >
+                      <Feather
+                        name="user"
+                        size={12}
+                        color={active ? "#fff" : colors.brand}
+                      />
+                      <Text
+                        style={{
+                          marginLeft: 4,
+                          color: active ? "#fff" : colors.brand,
+                          fontWeight: "700",
+                          fontSize: 12,
+                        }}
+                      >
+                        {u.name}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
             {allShifts.map((s) => (
               <TouchableOpacity
                 key={s.id}
-                style={styles.card}
+                style={[styles.card, dragShiftId === s.id && { opacity: 0.5 }]}
                 testID={`admin-shift-${s.id}`}
                 activeOpacity={0.7}
+                // @ts-ignore — DOM drag props on web only
+                draggable={isDesktop}
+                onDragStart={isDesktop ? ((e: any) => {
+                  setDragShiftId(s.id);
+                  try {
+                    if (e.dataTransfer) {
+                      e.dataTransfer.effectAllowed = "move";
+                      e.dataTransfer.setData("text/plain", s.id);
+                    }
+                  } catch {}
+                }) : undefined}
+                onDragEnd={isDesktop ? (() => {
+                  setDragShiftId(null);
+                  setDropTargetId(null);
+                }) : undefined}
                 onPress={() => {
                   setEditShift(s);
                   setETitle(s.title || "");
@@ -1956,4 +2033,35 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   deskContent: { paddingHorizontal: 28, paddingTop: 20, paddingBottom: 40, gap: spacing.sm },
+
+  // Drag-and-drop reassignment strip (desktop only)
+  dropZoneStrip: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    backgroundColor: "#fff",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderStyle: "dashed" as any,
+    borderColor: colors.brand,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  dropChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.brandSoft,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.brandSoft,
+  },
+  dropChipActive: {
+    backgroundColor: colors.brand,
+    borderColor: colors.brand,
+  },
 });

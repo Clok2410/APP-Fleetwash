@@ -109,6 +109,21 @@ user_problem_statement: |
   shift swap/availability, and admin dashboard.
 
 backend:
+  - task: "Phase 6: Push status / push test / shift drag-and-drop reassign"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Phase 6 backend. (1) GET /api/users/me/push-status — returns {registered:bool, token_preview:str|null, updated_at}. Only the first 14 + last 6 chars of the Expo token are exposed to avoid leaking the full token. (2) POST /api/users/me/push-token now also stamps push_token_updated_at on save. (3) POST /api/users/push-test — body {user_id?, title?, body?}. Staff can only send to self (user_id is ignored if not admin). Returns {sent, reason ('no_token'|'send_error'|null), target_id, target_name}. Tries _send_expo_push() to Expo's push gateway. Local smoke: admin->Jane returns sent=true (Expo accepts fake-but-well-formatted token); Jane targeting admin gets redirected to self. Invalid token format rejected by /push-token with 400. (4) PATCH /api/shifts/{sid}/reassign (admin) — body {user_id}. Sets new user_id, user_name, reassigned_at on the shift; sends notification to new assignee. 404 if shift or target user missing. Idempotent (returns same shift if already assigned). Local smoke verified reassign + restore."
+        - working: true
+          agent: "testing"
+          comment: "Phase 6 backend regression PASSED 39/39 via /app/phase6_test.py against the public proxy URL (admin@company.com / jane@company.com). (A) Push token + status: A1 staff GET /users/me/push-status → 200 with all 3 keys {registered, token_preview, updated_at}; A2 POST /push-token {token:''} → 200; A3 GET status confirms registered=false and token_preview=null; A4 POST {token:'ExponentPushToken[AAAA-BBBB-CCCC-DDDD]'} → 200; A5 GET status returns registered=true, token_preview EXACT match 'ExponentPushTo…-DDDD]' (first 14 + ellipsis + last 6 chars), updated_at populated; A6 POST {token:'junk'} → 400 with detail='Invalid Expo push token'. (B) Push test: B1 staff POST /users/push-test {} → 200 with target_id=jane_id, sent=true (Expo accepted the test token — backend log shows POST https://exp.host/--/api/v2/push/send 200 OK); B2 staff POST {user_id:admin_id} → 200 with target_id=jane_id (backend correctly IGNORES the user_id for non-admin and falls back to self), target_id != admin_id; B3 admin POST {user_id:jane_id,title:'Hi',body:'Test'} → 200 with target_id=jane_id and sent=true; B4 admin POST {user_id:'nonexistent_user_xyz'} → 404 with detail='User not found'. (C) Shift reassign: used existing seeded shift assigned to Jane ('Wash bay 4'); C1 admin PATCH /shifts/{S1.id}/reassign {user_id:admin_id} → 200 with response.user_id=admin_id, response.user_name='Admin', reassigned_at populated; C2 idempotent re-PATCH same user_id → 200 with user_id unchanged (admin path returns serialize(shift) without re-stamping reassigned_at, per spec 'may return same shift unchanged or with new reassigned_at'); C3 PATCH /shifts/nonexistent_shift_xyz/reassign → 404 with detail='Shift not found'; C4 PATCH bogus user_id → 404 with detail='Target user not found'; C5 staff PATCH /reassign → 403 'Admin access required'; C6 cleanup PATCH back to original (Jane) → 200 with user_id restored. (D) Auth guards: unauth GET /push-status → 401, unauth POST /push-test → 401, unauth PATCH /reassign → 401. All 39 assertions PASS, 0 failures. Task fully working per spec."
+
   - task: "Phase 3: Holiday cancel + balance breakdown + days field + allow 0-balance"
     implemented: true
     working: true
@@ -430,15 +445,14 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Phase 3: Holiday cancel + balance breakdown + allow 0-balance"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
     - agent: "testing"
-      message: "Phase 2 backend regression PASSED 63/63 via /app/phase2_test.py against the public proxy URL. (A) Staff profile edits: phone/dob/pps_number persist via PATCH /users/me/profile and reflect in /auth/me; dob='not-a-date' → 400 'dob must be YYYY-MM-DD'; email='admin@company.com' → 400 'Email already in use'; empty body → 200 no-op. (B) Admin user edits: start_date/employment_type/holiday_entitlement/phone all update via PATCH /users/{id}; employment_type='casual' → 400 with both 'full_time' and 'part_time' in detail; role='superadmin' → 400; holiday_entitlement=400 → 400 'holiday_entitlement must be 0–365'; start_date='bad' → 400 'start_date must be YYYY-MM-DD'; staff PATCH /users/{admin_id} → 403. (C) Sick Pay eligibility: start_date='' clears (null); 20w-ago → sick_pay_eligible=true, weeks_employed=20.0, sick_pay_eligible_on=null; 5w-ago → false, weeks_employed=5.0, sick_pay_eligible_on=start_date+91d EXACT; admin GET /users/{jane_id}/eligibility returns all 9 keys; staff GET /users/{admin_id}/eligibility → 403. (D) Bank Holiday: full_time → bank_holiday_eligible=true & threshold=0.0; part_time → threshold=40.0 with numeric hours_last_5_weeks and bank_holiday_eligible matches the 40h gate. Deterministic check: seeded 45h via Mongo (2 entries, raw clock_in→clock_out, no breaks) → hours_last_5_weeks=45.1 and bank_holiday_eligible=true; seed cleanup brings hours back to baseline. Jane restored to full_time + cleared start_date after tests. (E) Auth guards: unauth PATCH /users/me/profile → 401; unauth GET /users/me/eligibility → 401; staff PATCH /users/{admin_id} → 403; staff GET /users/{admin_id}/eligibility → 403. Task marked working: true, needs_retesting: false. No critical or minor issues; safe to summarise and finish."
+      message: "Phase 6 backend regression PASSED 39/39 via /app/phase6_test.py against the public proxy URL. (A) Push token + status: GET /users/me/push-status returns correct shape {registered,token_preview,updated_at}; POST /push-token clears with token=''; valid 'ExponentPushToken[...]' sets token and stamps push_token_updated_at; token_preview is EXACTLY 'ExponentPushTo…-DDDD]' (first 14 + ellipsis + last 6 chars); 'junk' rejected with 400 'Invalid Expo push token'. (B) Push test: staff /push-test {} targets self (jane); staff {user_id:admin} backend correctly IGNORES the param and still targets jane; admin can target any user; nonexistent user → 404 'User not found'; Expo gateway accepted the well-formatted fake token and returned 200 (sent=true). (C) Shift reassign: admin PATCH /shifts/{id}/reassign updates user_id+user_name+reassigned_at; idempotent same-user PATCH → 200 (returns shift unchanged, no error); nonexistent shift → 404 'Shift not found'; bogus user_id → 404 'Target user not found'; staff → 403; cleanup restore works. (D) Auth guards: unauth GET /push-status, POST /push-test, PATCH /reassign all → 401. 0 failures. Task marked working: true, needs_retesting: false. Safe for main agent to summarise and finish."
 
 agent_communication_phase1:
 
