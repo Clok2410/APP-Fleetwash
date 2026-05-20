@@ -460,7 +460,8 @@ export default function AdminScreen() {
   };
 
   const { width: winW } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && winW >= 1024;
+  const [forceDesktop, setForceDesktop] = useState(false);
+  const isDesktop = forceDesktop || (Platform.OS === "web" && winW >= 1024);
 
   const tabIcons: Record<string, any> = {
     holidays: "calendar",
@@ -546,8 +547,16 @@ export default function AdminScreen() {
             ))}
             <View style={{ flex: 1 }} />
             <TouchableOpacity
-              onPress={() => router.back()}
+              testID="exit-desktop"
+              onPress={() => setForceDesktop(false)}
               style={[styles.sideNav, { marginTop: 12 }]}
+            >
+              <Feather name="smartphone" size={16} color={colors.textMuted} />
+              <Text style={styles.sideNavText}>Mobile view</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => router.back()}
+              style={styles.sideNav}
             >
               <Feather name="arrow-left" size={16} color={colors.textMuted} />
               <Text style={styles.sideNavText}>Back to App</Text>
@@ -596,7 +605,19 @@ export default function AdminScreen() {
             <TouchableOpacity onPress={() => router.back()}>
               <Feather name="x" size={24} color={colors.primary} />
             </TouchableOpacity>
-            <Text style={[typography.h3, { marginLeft: 12 }]}>Admin Panel</Text>
+            <Text style={[typography.h3, { marginLeft: 12, flex: 1 }]}>Admin Panel</Text>
+            {Platform.OS === "web" ? (
+              <TouchableOpacity
+                testID="toggle-desktop"
+                onPress={() => setForceDesktop(true)}
+                style={styles.desktopToggle}
+              >
+                <Feather name="monitor" size={14} color={colors.brand} />
+                <Text style={{ color: colors.brand, fontSize: 12, fontWeight: "700", marginLeft: 4 }}>
+                  Desktop view
+                </Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
 
           <View style={styles.tabs}>
@@ -2063,5 +2084,13 @@ const styles = StyleSheet.create({
   dropChipActive: {
     backgroundColor: colors.brand,
     borderColor: colors.brand,
+  },
+  desktopToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: colors.brandSoft,
   },
 });
