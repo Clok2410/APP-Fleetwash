@@ -1015,6 +1015,61 @@ async def list_holiday_requests(current=Depends(get_current_user), all: bool = F
     return [serialize(d) for d in docs]
 
 
+class HolidayEditIn(BaseModel):
+    start_date: Optional[str] = None  # YYYY-MM-DD
+    end_date: Optional[str] = None
+    reason: Optional[str] = None
+    type: Optional[str] = None  # 'annual'|'sick'|'unpaid'
+
+
+@api.patch("/holidays/requests/{rid}")
+async def edit_holiday_request(rid: str, body: HolidayEditIn, current=Depends(get_current_user)):
+    """Edit the dates/reason/type of a holiday request. Staff can edit ONLY their own
+    pending requests. Admin can edit any request in any state. Re-computes `days`."""
+    h = await db.holiday_requests.find_one({"id": rid})
+    if not h:
+        raise HTTPException(status_code=404, detail="Request not found")
+    is_admin = current.get("role") == "admin"
+    if not is_admin:
+        if h.get("user_id") != current["id"]:
+            raise HTTPException(status_code=403, detail="Cannot edit another staff member's request")
+        if h.get("status") != "pending":
+            raise HTTPException(status_code=400, detail="Only pending requests can be edited by staff")
+    updates: Dict[str, Any] = {}
+    if body.start_date is not None:
+        _validate_iso_date(body.start_date, "start_date")
+        updates["start_date"] = body.start_date
+    if body.end_date is not None:
+        _validate_iso_date(body.end_date, "end_date")
+        updates["end_date"] = body.end_date
+    if body.reason is not None:
+        updates["reason"] = body.reason
+    if body.type is not None:
+        if body.type not in ("annual", "sick", "unpaid"):
+            raise HTTPException(status_code=400, detail="type must be 'annual'|'sick'|'unpaid'")
+        updates["type"] = body.type
+    if updates:
+        # Recompute days if dates touched
+        s_raw = updates.get("start_date", h.get("start_date"))
+        e_raw = updates.get("end_date", h.get("end_date"))
+        try:
+            s = datetime.fromisoformat(s_raw).date()
+            e = datetime.fromisoformat(e_raw).date()
+            if e < s:
+                raise HTTPException(status_code=400, detail="end_date cannot be before start_date")
+            updates["days"] = (e - s).days + 1
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        updates["edited_at"] = now_utc()
+        updates["edited_by"] = "admin" if is_admin else "self"
+        updates["edited_by_name"] = current.get("name")
+        await db.holiday_requests.update_one({"id": rid}, {"$set": updates})
+    doc = await db.holiday_requests.find_one({"id": rid})
+    return serialize(doc)
+
+
 @api.post("/holidays/requests/{rid}/decision")
 async def decide_holiday(rid: str, decision: str, _=Depends(require_admin)):
     if decision not in ("approved", "rejected"):

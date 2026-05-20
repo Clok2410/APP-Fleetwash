@@ -57,6 +57,12 @@ export default function AdminScreen() {
   const [rosterStartTime, setRosterStartTime] = useState("06:30");
   const [rosterNotify, setRosterNotify] = useState(true);
   const [rosterTemplates, setRosterTemplates] = useState<any[]>([]);
+  // A1: Holiday detail drawer
+  const [holidayDetail, setHolidayDetail] = useState<any>(null);
+  const [hdStart, setHdStart] = useState("");
+  const [hdEnd, setHdEnd] = useState("");
+  const [hdReason, setHdReason] = useState("");
+  const [hdType, setHdType] = useState<"annual" | "sick" | "unpaid">("annual");
   const [depots, setDepots] = useState<any[]>([]);
   const [offsite, setOffsite] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -206,6 +212,45 @@ export default function AdminScreen() {
   const decideHoliday = async (id: string, decision: string) => {
     await api.post(`/holidays/requests/${id}/decision`, null, { params: { decision } });
     await load();
+  };
+
+  const openHolidayDetail = (h: any) => {
+    setHolidayDetail(h);
+    setHdStart(h.start_date || "");
+    setHdEnd(h.end_date || "");
+    setHdReason(h.reason || "");
+    setHdType((h.type as any) || "annual");
+  };
+
+  const saveHolidayEdit = async () => {
+    if (!holidayDetail) return;
+    if (hdStart && !/^\d{4}-\d{2}-\d{2}$/.test(hdStart)) return Alert.alert("Invalid start", "YYYY-MM-DD");
+    if (hdEnd && !/^\d{4}-\d{2}-\d{2}$/.test(hdEnd)) return Alert.alert("Invalid end", "YYYY-MM-DD");
+    try {
+      await api.patch(`/holidays/requests/${holidayDetail.id}`, {
+        start_date: hdStart,
+        end_date: hdEnd,
+        reason: hdReason,
+        type: hdType,
+      });
+      setHolidayDetail(null);
+      await load();
+      Alert.alert("Saved", "Holiday request updated.");
+    } catch (e: any) {
+      Alert.alert("Failed", e.response?.data?.detail || "Try again");
+    }
+  };
+
+  const decideInDetail = async (decision: "approved" | "rejected") => {
+    if (!holidayDetail) return;
+    await decideHoliday(holidayDetail.id, decision);
+    setHolidayDetail(null);
+  };
+
+  const cancelInDetail = () => {
+    if (!holidayDetail) return;
+    cancelHoliday(holidayDetail);
+    setHolidayDetail(null);
   };
 
   const cancelHoliday = (h: any) => {
@@ -904,7 +949,13 @@ export default function AdminScreen() {
               <Text style={[typography.small, { color: colors.textMuted }]}>No requests yet.</Text>
             ) : (
               holidays.map((h) => (
-                <View key={h.id} style={styles.card}>
+                <TouchableOpacity
+                  key={h.id}
+                  style={styles.card}
+                  testID={`admin-holiday-${h.id}`}
+                  activeOpacity={0.7}
+                  onPress={() => openHolidayDetail(h)}
+                >
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontWeight: "700", color: colors.primary }}>{h.user_name}</Text>
                     <Text style={typography.small}>
@@ -943,7 +994,7 @@ export default function AdminScreen() {
                       </TouchableOpacity>
                     )}
                   </View>
-                </View>
+                </TouchableOpacity>
               ))
             )}
           </>
@@ -2336,6 +2387,127 @@ export default function AdminScreen() {
                   <Text style={{ color: "#fff", fontWeight: "700", marginLeft: 4 }}>
                     {rosterPublishing ? "Publishing…" : "Publish to Staff"}
                   </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* A1: Holiday detail modal — view, approve, reject, cancel, edit */}
+      <Modal visible={!!holidayDetail} transparent animationType="slide" onRequestClose={() => setHolidayDetail(null)}>
+        <View style={styles.modalBg}>
+          <View style={[styles.modalCard, { maxHeight: "92%" }]}>
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
+              <Text style={[typography.h3, { flex: 1 }]}>Holiday Request</Text>
+              <View
+                style={[
+                  styles.statusPill,
+                  holidayDetail?.status === "approved" && { backgroundColor: "#D1FAE5" },
+                  holidayDetail?.status === "rejected" && { backgroundColor: "#FEE2E2" },
+                  holidayDetail?.status === "cancelled" && { backgroundColor: colors.surface },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.statusText,
+                    holidayDetail?.status === "cancelled" && { color: colors.textMuted },
+                  ]}
+                >
+                  {holidayDetail?.status}
+                </Text>
+              </View>
+            </View>
+            <Text style={[typography.small, { marginTop: 4, marginBottom: 8 }]}>
+              Submitted by{" "}
+              <Text style={{ fontWeight: "700", color: colors.primary }}>{holidayDetail?.user_name}</Text>
+              {holidayDetail?.created_at ? ` · ${String(holidayDetail.created_at).slice(0, 10)}` : ""}
+              {holidayDetail?.days ? ` · ${holidayDetail.days} day${holidayDetail.days === 1 ? "" : "s"}` : ""}
+            </Text>
+            <ScrollView nestedScrollEnabled style={{ maxHeight: 440 }}>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {(["annual", "sick", "unpaid"] as const).map((t) => (
+                  <TouchableOpacity
+                    key={t}
+                    onPress={() => setHdType(t)}
+                    style={[styles.typeChip, hdType === t && { backgroundColor: colors.primary }]}
+                  >
+                    <Text style={{ color: hdType === t ? "#fff" : colors.primary, fontWeight: "600", fontSize: 13 }}>
+                      {t}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={[typography.label, { marginTop: 10 }]}>Start (YYYY-MM-DD)</Text>
+              <TextInput testID="hd-start" style={styles.input} value={hdStart} onChangeText={setHdStart} />
+              <Text style={[typography.label, { marginTop: 8 }]}>End (YYYY-MM-DD)</Text>
+              <TextInput testID="hd-end" style={styles.input} value={hdEnd} onChangeText={setHdEnd} />
+              <Text style={[typography.label, { marginTop: 8 }]}>Reason</Text>
+              <TextInput
+                testID="hd-reason"
+                style={[styles.input, { height: 64 }]}
+                value={hdReason}
+                onChangeText={setHdReason}
+                multiline
+                placeholder="Optional"
+                placeholderTextColor={colors.textMuted}
+              />
+              {holidayDetail?.edited_at ? (
+                <Text style={[typography.small, { color: colors.textMuted, fontSize: 11, marginTop: 6 }]}>
+                  Last edited by {holidayDetail.edited_by_name || holidayDetail.edited_by}{" "}
+                  · {String(holidayDetail.edited_at).slice(0, 16)}
+                </Text>
+              ) : null}
+              {holidayDetail?.cancelled_at ? (
+                <Text style={[typography.small, { color: colors.alert, fontSize: 11, marginTop: 6 }]}>
+                  Cancelled by {holidayDetail.cancelled_by === "admin" ? holidayDetail.cancelled_by_name || "admin" : "staff"}{" "}
+                  · {String(holidayDetail.cancelled_at).slice(0, 16)}
+                </Text>
+              ) : null}
+            </ScrollView>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: colors.surface, flex: 0, paddingHorizontal: 14 }]}
+                onPress={() => setHolidayDetail(null)}
+              >
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Close</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="hd-save"
+                style={[styles.modalBtn, { backgroundColor: colors.primary, flex: 0, paddingHorizontal: 14 }]}
+                onPress={saveHolidayEdit}
+              >
+                <Feather name="save" size={14} color="#fff" />
+                <Text style={{ color: "#fff", fontWeight: "700", marginLeft: 4 }}>Save edits</Text>
+              </TouchableOpacity>
+              {holidayDetail?.status === "pending" && (
+                <>
+                  <TouchableOpacity
+                    testID="hd-approve"
+                    style={[styles.modalBtn, { backgroundColor: colors.success, flex: 0, paddingHorizontal: 14 }]}
+                    onPress={() => decideInDetail("approved")}
+                  >
+                    <Feather name="check" size={14} color="#fff" />
+                    <Text style={{ color: "#fff", fontWeight: "700", marginLeft: 4 }}>Approve</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    testID="hd-reject"
+                    style={[styles.modalBtn, { backgroundColor: colors.alert, flex: 0, paddingHorizontal: 14 }]}
+                    onPress={() => decideInDetail("rejected")}
+                  >
+                    <Feather name="x" size={14} color="#fff" />
+                    <Text style={{ color: "#fff", fontWeight: "700", marginLeft: 4 }}>Reject</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+              {(holidayDetail?.status === "pending" || holidayDetail?.status === "approved") && (
+                <TouchableOpacity
+                  testID="hd-cancel"
+                  style={[styles.modalBtn, { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.alert, flex: 0, paddingHorizontal: 14 }]}
+                  onPress={cancelInDetail}
+                >
+                  <Feather name="x-circle" size={14} color={colors.alert} />
+                  <Text style={{ color: colors.alert, fontWeight: "700", marginLeft: 4 }}>Cancel request</Text>
                 </TouchableOpacity>
               )}
             </View>
