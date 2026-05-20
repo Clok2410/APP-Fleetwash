@@ -56,6 +56,7 @@ export default function AdminScreen() {
   const [rosterWeekStart, setRosterWeekStart] = useState(""); // YYYY-MM-DD
   const [rosterStartTime, setRosterStartTime] = useState("06:30");
   const [rosterNotify, setRosterNotify] = useState(true);
+  const [rosterTemplates, setRosterTemplates] = useState<any[]>([]);
   const [depots, setDepots] = useState<any[]>([]);
   const [offsite, setOffsite] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -445,13 +446,75 @@ export default function AdminScreen() {
     setRosterParsing(true);
     try {
       const { data } = await api.post("/roster/parse", { pdf_base64: rosterFile.base64 });
-      setRosterRows((data.rows || []).map((r: any) => ({ ...r, user_id: null })));
-      if (!data.count) Alert.alert("No rows found", "The AI couldn't extract any staff rows.");
+      // Use backend's `suggested_user_id` as the initial user_id (admin can override)
+      const rows = (data.rows || []).map((r: any) => ({
+        ...r,
+        user_id: r.suggested_user_id || null,
+      }));
+      setRosterRows(rows);
+      const matched = rows.filter((r: any) => r.user_id).length;
+      if (!data.count) {
+        Alert.alert("No rows found", "The AI couldn't extract any staff rows.");
+      } else if (matched) {
+        Alert.alert(
+          "Parsed",
+          `${data.count} rows extracted · ${matched} matched to staff automatically. Review and adjust before publishing.`,
+        );
+      }
     } catch (e: any) {
       Alert.alert("Parse failed", e.response?.data?.detail || "Try again");
     } finally {
       setRosterParsing(false);
     }
+  };
+
+  // ---- Roster Templates (save / load) ----
+  const loadRosterTemplates = async () => {
+    try {
+      const { data } = await api.get("/roster/templates");
+      setRosterTemplates(data || []);
+    } catch {}
+  };
+
+  const saveRosterAsTemplate = async () => {
+    const name = (
+      typeof window !== "undefined" && (window as any).prompt
+        ? (window as any).prompt("Template name (e.g. 'Standard week')")
+        : null
+    );
+    if (!name) return;
+    try {
+      await api.post("/roster/templates", {
+        name,
+        rows: rosterRows,
+        default_start_time: rosterStartTime,
+      });
+      await loadRosterTemplates();
+      Alert.alert("Saved", `Template '${name}' saved. You can load it next time you open this dialog.`);
+    } catch (e: any) {
+      Alert.alert("Failed", e.response?.data?.detail || "Try again");
+    }
+  };
+
+  const applyTemplate = (tpl: any) => {
+    setRosterRows((tpl.rows || []).map((r: any) => ({ ...r })));
+    if (tpl.default_start_time) setRosterStartTime(tpl.default_start_time);
+  };
+
+  const deleteTemplate = async (tid: string) => {
+    Alert.alert("Delete template?", "This cannot be undone.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await api.delete(`/roster/templates/${tid}`);
+            await loadRosterTemplates();
+          } catch {}
+        },
+      },
+    ]);
   };
 
   const updateRosterUser = (idx: number, userId: string | null) => {
@@ -896,7 +959,10 @@ export default function AdminScreen() {
               <TouchableOpacity
                 testID="import-roster-btn"
                 style={[styles.addCta, { flex: 1, backgroundColor: colors.brand }]}
-                onPress={() => setRosterOpen(true)}
+                onPress={() => {
+                  setRosterOpen(true);
+                  loadRosterTemplates();
+                }}
               >
                 <Feather name="upload" size={16} color="#fff" />
                 <Text style={styles.addCtaText}>Import Roster PDF</Text>
@@ -2143,6 +2209,47 @@ export default function AdminScreen() {
                   </Text>
                 </TouchableOpacity>
 
+                {/* Save / load templates */}
+                <View style={styles.templatesBar}>
+                  <Feather name="bookmark" size={12} color={colors.brand} />
+                  <Text style={[typography.small, { color: colors.brand, fontWeight: "700", marginLeft: 4, marginRight: 8 }]}>
+                    TEMPLATES
+                  </Text>
+                  {rosterTemplates.length === 0 ? (
+                    <Text style={[typography.small, { color: colors.textMuted, fontSize: 11 }]}>
+                      No saved templates yet.
+                    </Text>
+                  ) : (
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, flex: 1 }}>
+                      {rosterTemplates.map((tpl) => (
+                        <View key={tpl.id} style={styles.templatePill}>
+                          <TouchableOpacity
+                            testID={`load-tpl-${tpl.id}`}
+                            onPress={() => applyTemplate(tpl)}
+                          >
+                            <Text style={{ fontSize: 11, color: colors.brand, fontWeight: "700" }}>
+                              {tpl.name}
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => deleteTemplate(tpl.id)} style={{ marginLeft: 6 }}>
+                            <Feather name="x" size={11} color={colors.alert} />
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                  <TouchableOpacity
+                    testID="save-tpl-btn"
+                    onPress={saveRosterAsTemplate}
+                    style={styles.savePillBtn}
+                  >
+                    <Feather name="save" size={11} color="#fff" />
+                    <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 3 }}>
+                      Save as template
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
                 <Text style={[typography.small, { color: colors.textMuted, marginTop: 4, marginBottom: 4 }]}>
                   {rosterRows.length} rows parsed. Map a staff user for each row you want to publish; rows with no user are skipped.
                 </Text>
@@ -2460,5 +2567,36 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+  },
+  templatesBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+    backgroundColor: colors.brandSoft,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    marginTop: 6,
+    marginBottom: 6,
+  },
+  templatePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.brand,
+  },
+  savePillBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.brand,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    marginLeft: "auto",
   },
 });

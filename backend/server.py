@@ -1095,6 +1095,35 @@ class RosterPublishIn(BaseModel):
     notify: bool = True
 
 
+class RosterTemplateIn(BaseModel):
+    name: str  # e.g. "Standard week", "Summer schedule"
+    rows: List[Dict[str, Any]]  # [{name, mon, tue, ..., user_id?}]
+    default_start_time: Optional[str] = "06:30"
+
+
+def _suggest_user_for_row(name: str, users: List[Dict[str, Any]]) -> Optional[str]:
+    """Naïvely match a roster row name (which may be 'Damien', 'Kieran & Caique',
+    'Mark, Nathan & Andrew') to one of the existing users. Strategy:
+    - Tokenise the row name on '&', ',', '/', '+'
+    - For the FIRST token, lowercase first-word
+    - Find a user whose name (lowercase) contains that token as a whole-word
+    - Returns the user id of the best (first) match, else None.
+    """
+    if not name:
+        return None
+    import re
+    first = re.split(r"[&,/+]", name)[0].strip().lower()
+    if not first:
+        return None
+    first_word = first.split()[0] if first.split() else first
+    for u in users:
+        full = (u.get("name") or "").lower()
+        # Word-boundary match on the first word
+        if re.search(rf"\b{re.escape(first_word)}\b", full):
+            return u["id"]
+    return None
+
+
 @api.post("/roster/parse")
 async def parse_roster(body: RosterParseIn, _=Depends(require_admin)):
     """Use the Emergent LLM key to extract a structured roster grid from a PDF.
@@ -1162,6 +1191,8 @@ async def parse_roster(body: RosterParseIn, _=Depends(require_admin)):
         import json as _json
         parsed = _json.loads(s)
         rows = parsed.get("rows", []) if isinstance(parsed, dict) else []
+        # Load existing users for fuzzy match suggestions
+        user_docs = await db.users.find({"role": {"$ne": "admin"}}).to_list(500)
         # Normalize empty strings; ensure each row has all day keys
         out_rows = []
         for r in rows:
@@ -1170,6 +1201,7 @@ async def parse_roster(body: RosterParseIn, _=Depends(require_admin)):
             name = (r.get("name") or "").strip()
             if not name:
                 continue
+            suggested = _suggest_user_for_row(name, user_docs)
             out_rows.append({
                 "name": name,
                 "mon": (r.get("mon") or "").strip(),
@@ -1179,6 +1211,7 @@ async def parse_roster(body: RosterParseIn, _=Depends(require_admin)):
                 "fri": (r.get("fri") or "").strip(),
                 "sat": (r.get("sat") or "").strip(),
                 "sun": (r.get("sun") or "").strip(),
+                "suggested_user_id": suggested,
             })
         return {"rows": out_rows, "count": len(out_rows)}
     except HTTPException:
@@ -1274,6 +1307,38 @@ async def publish_roster(body: RosterPublishIn, current=Depends(require_admin)):
         "week_end": (next_mon - timedelta(days=1)).strftime("%Y-%m-%d"),
         "notified_user_ids": list(notified_ids),
     }
+
+
+# Roster Templates — save a roster (rows + mapping) for re-use
+@api.post("/roster/templates")
+async def save_roster_template(body: RosterTemplateIn, current=Depends(require_admin)):
+    if not body.name or not body.name.strip():
+        raise HTTPException(status_code=400, detail="Template name required")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": body.name.strip(),
+        "rows": body.rows or [],
+        "default_start_time": body.default_start_time or "06:30",
+        "created_by": current["id"],
+        "created_by_name": current.get("name"),
+        "created_at": now_utc(),
+    }
+    await db.roster_templates.insert_one(doc)
+    return serialize(doc)
+
+
+@api.get("/roster/templates")
+async def list_roster_templates(_=Depends(require_admin)):
+    docs = await db.roster_templates.find().sort("created_at", -1).to_list(500)
+    return [serialize(d) for d in docs]
+
+
+@api.delete("/roster/templates/{tid}")
+async def delete_roster_template(tid: str, _=Depends(require_admin)):
+    res = await db.roster_templates.delete_one({"id": tid})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"ok": True}
 
 
 @api.post("/shifts")

@@ -109,6 +109,18 @@ user_problem_statement: |
   shift swap/availability, and admin dashboard.
 
 backend:
+  - task: "Roster R1: fuzzy staff-match suggestions + reusable roster templates"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "POST /api/roster/parse now returns per-row `suggested_user_id` computed via _suggest_user_for_row() — tokenises the parsed row name on '&,/+', lower-cases the first token's first word, and matches against existing non-admin users using a word-boundary regex (case-insensitive). Returns the first match, else None. Verified locally: 'Damien' → Damien O'Brien, 'Damien no helper' → same user, 'Kieran & Caique' → Kieran (first token), 'ANDREW' (caps) → Andrew Walsh, unmatched name → None. Also added 3 admin-only template endpoints: POST /api/roster/templates {name, rows, default_start_time?} → saves a snapshot; GET /api/roster/templates → list latest first; DELETE /api/roster/templates/{tid} → returns 404 if missing. Local CRUD smoke test passed. Frontend (admin.tsx Roster Import modal) now: pre-fills user_id from suggested_user_id on parse; shows a 'TEMPLATES' bar with brand-blue-soft background, pills for each saved template (click to apply, ✕ to delete), and a 'Save as template' button (prompts for name on web)."
+
   - task: "Roster PDF import: AI parse + publish to staff schedules"
     implemented: true
     working: true
