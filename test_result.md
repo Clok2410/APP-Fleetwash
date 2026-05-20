@@ -111,11 +111,11 @@ user_problem_statement: |
 backend:
   - task: "Phase A2: Submissions Inbox + Mark Reviewed (GET /admin/submissions-inbox + PATCH review endpoints)"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/server.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: "NA"
           agent: "main"
@@ -123,6 +123,9 @@ backend:
         - working: false
           agent: "testing"
           comment: "Phase A2 backend regression 59/60 via /app/inbox_test.py against the public proxy URL (admin@company.com / jane@company.com). PASSING: (A1-A4) admin GET /admin/submissions-inbox → 200 list; required-keys shape {id,kind,template_id,template_title,user_id,user_name,created_at,reviewed,reviewed_at,reviewed_by,reviewed_by_name,status,ai_summary} all present; kind ∈ {form,pdf}; sort created_at desc verified; staff → 403; unauth → 401. (B1-B6,B8-B9) kind=form filter → only forms (sid_form present, sid_pdf absent); kind=pdf → mirror; template_id filter scopes correctly; user_id=jane filter; from_date=2099 → empty; to_date=2000 → empty; reviewed=true correctly EXCLUDES the freshly-created sid_form/sid_pdf and only contains rows with reviewed=true; from_date=bad-date → 400. (C) Form review toggle: PATCH reviewed=true → 200 with reviewed=true, reviewed_by=admin_id, reviewed_by_name='Admin', reviewed_at populated, kind='form'; inbox?reviewed=true now includes sid_form; PATCH reviewed=false → 200 with reviewed=false and all three audit fields null; staff PATCH → 403; nonexistent → 404; unauth → 401. (D) PDF review toggle: PATCH reviewed=true → 200 with reviewed_by_name='Admin' and timestamp; inbox?kind=pdf&reviewed=true includes sid_pdf; PATCH back to false → 200 with nulls; staff → 403; nonexistent → 404. Cleanup DELETE form+pdf templates → 200.\n\nFAILING — CRITICAL DEFECT IN ?reviewed=false FILTER (B7): The Mongo query `q['reviewed'] = False` (line ~3222 server.py) only matches documents where the field is explicitly stored as False. Newly created form/pdf submissions are inserted WITHOUT a `reviewed` field at all (see /forms/submissions POST line ~1798-1808 and /pdf-forms/templates/{tid}/fill line ~3102 — neither stamps `reviewed:false` on insert). Result: filtering by reviewed=false silently EXCLUDES every never-reviewed submission. Verified against the live DB: of 12 inbox rows total, only 2 appear in reviewed=false (those 2 had been toggled true→false explicitly in prior tests); the other 10 never-reviewed submissions are dropped. Admin's primary use case — viewing the unreviewed inbox — is effectively broken: only docs that were previously marked reviewed and un-reviewed will surface. FIX OPTIONS: (a) on insert into form_submissions / pdf_form_submissions stamp `reviewed: False`, OR (b) change filter to `q['reviewed'] = {'$ne': True}` when reviewed='false' (matches both False and missing). Option (b) covers all legacy data without a migration. The reviewed=true filter is correct."
+        - working: true
+          agent: "testing"
+          comment: "RE-TEST PASSED 17/17 via /app/inbox_reviewed_false_test.py against the public proxy URL (admin@company.com / jane@company.com). Main agent applied option (b) at server.py:3221-3223: `if reviewed in ('true','false'): q['reviewed'] = True if reviewed == 'true' else {'$ne': True}`. Verified scenarios: (1) GET /admin/submissions-inbox?reviewed=false → 200 with 12 rows (PREVIOUSLY 2 — now correctly includes the ~10 legacy submissions where the `reviewed` field is missing on insert). (2) Count significantly more than 2 ✓. (3) Cross-check: GET no-filter → 12 rows, GET ?reviewed=true → 0 rows (matches DB state where nothing is currently toggled true), GET ?reviewed=false → 12 rows. (4) Math invariant holds: 12 == 0 + 12 ✓. All rows in ?reviewed=false have reviewed != True (0 violations); all rows in ?reviewed=true have reviewed == True (0 violations); 12/12 rows in ?reviewed=false have reviewed in (None, False) — confirms legacy (missing field) rows are now included. (5) Fresh staff form submission: created template + Jane POSTed submission → new sid appears in ?reviewed=false (size 13) and NOT in ?reviewed=true; admin PATCH reviewed=true → sid moves to ?reviewed=true and disappears from ?reviewed=false; PATCH back to reviewed=false → sid returns to ?reviewed=false. Final post-cleanup invariant: 13 == 0 + 13. The `?reviewed=false` filter is now fully working per spec and the previous CRITICAL defect is resolved."
 
   - task: "Phase A1: PATCH /holidays/requests/{rid} — edit dates/reason/type"
     implemented: true

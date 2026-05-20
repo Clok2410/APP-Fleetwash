@@ -3219,7 +3219,8 @@ async def admin_submissions_inbox(
     if user_id:
         q["user_id"] = user_id
     if reviewed in ("true", "false"):
-        q["reviewed"] = (reviewed == "true")
+        # 'false' must also match documents where the field is missing (legacy submissions)
+        q["reviewed"] = True if reviewed == "true" else {"$ne": True}
     # Date range on created_at (string ISO; mongo lexical compare works for ISO 8601)
     if from_date or to_date:
         date_q: Dict[str, Any] = {}
