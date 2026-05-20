@@ -8,6 +8,7 @@ import {
   Alert,
   Modal,
   TextInput,
+  useWindowDimensions,
 } from "react-native";
 import { useFocusEffect, useRouter, Redirect } from "expo-router";
 import { Feather } from "@expo/vector-icons";
@@ -443,35 +444,176 @@ export default function AdminScreen() {
     ]);
   };
 
+  const { width: winW } = useWindowDimensions();
+  const isDesktop = Platform.OS === "web" && winW >= 1024;
+
+  const tabIcons: Record<string, any> = {
+    holidays: "calendar",
+    shifts: "clock",
+    forms: "file-text",
+    "pdf-forms": "file",
+    users: "users",
+    depots: "map-pin",
+    offsite: "alert-circle",
+    customers: "briefcase",
+  };
+  const tabLabels: Record<string, string> = {
+    holidays: "Holidays",
+    shifts: "Schedule",
+    forms: "Forms",
+    "pdf-forms": "PDF Forms",
+    users: "Employees",
+    depots: "Depots",
+    offsite: `Off-site${offsite.length ? ` · ${offsite.length}` : ""}`,
+    customers: "Customers",
+  };
+
+  // Compute dashboard metrics for the current view (holidays = pending count etc.)
+  const pendingHolidays = holidays.filter((h: any) => h.status === "pending").length;
+  const approvedHolidays = holidays.filter((h: any) => h.status === "approved").length;
+  const offsiteCount = offsite.length;
+  const staffCount = users.filter((u: any) => u.role !== "admin").length;
+
   return (
     <SafeAreaView style={styles.safe}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Feather name="x" size={24} color={colors.primary} />
-        </TouchableOpacity>
-        <Text style={[typography.h3, { marginLeft: 12 }]}>Admin Panel</Text>
-      </View>
+      {isDesktop ? (
+        // ====== DESKTOP LAYOUT (Connecteam-style) ======
+        <View style={styles.deskRoot}>
+          {/* Sidebar */}
+          <View style={styles.sidebar}>
+            <View style={styles.sidebarLogo}>
+              <View style={styles.logoMark}>
+                <Feather name="users" size={18} color="#fff" />
+              </View>
+              <Text style={styles.logoText}>StaffHub</Text>
+            </View>
+            <Text style={styles.sidebarSection}>MANAGE</Text>
+            {(["holidays", "shifts", "offsite"] as const).map((t) => (
+              <TouchableOpacity
+                key={t}
+                testID={`admin-tab-${t}`}
+                onPress={() => setTab(t)}
+                style={[styles.sideNav, tab === t && styles.sideNavActive]}
+              >
+                <Feather name={tabIcons[t]} size={16} color={tab === t ? colors.brand : colors.textMuted} />
+                <Text style={[styles.sideNavText, tab === t && styles.sideNavTextActive]}>
+                  {tabLabels[t]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            <Text style={styles.sidebarSection}>FORMS</Text>
+            {(["forms", "pdf-forms"] as const).map((t) => (
+              <TouchableOpacity
+                key={t}
+                testID={`admin-tab-${t}`}
+                onPress={() => setTab(t)}
+                style={[styles.sideNav, tab === t && styles.sideNavActive]}
+              >
+                <Feather name={tabIcons[t]} size={16} color={tab === t ? colors.brand : colors.textMuted} />
+                <Text style={[styles.sideNavText, tab === t && styles.sideNavTextActive]}>
+                  {tabLabels[t]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            <Text style={styles.sidebarSection}>ORGANISATION</Text>
+            {(["users", "depots", "customers"] as const).map((t) => (
+              <TouchableOpacity
+                key={t}
+                testID={`admin-tab-${t}`}
+                onPress={() => setTab(t)}
+                style={[styles.sideNav, tab === t && styles.sideNavActive]}
+              >
+                <Feather name={tabIcons[t]} size={16} color={tab === t ? colors.brand : colors.textMuted} />
+                <Text style={[styles.sideNavText, tab === t && styles.sideNavTextActive]}>
+                  {tabLabels[t]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            <View style={{ flex: 1 }} />
+            <TouchableOpacity
+              onPress={() => router.back()}
+              style={[styles.sideNav, { marginTop: 12 }]}
+            >
+              <Feather name="arrow-left" size={16} color={colors.textMuted} />
+              <Text style={styles.sideNavText}>Back to App</Text>
+            </TouchableOpacity>
+          </View>
 
-      <View style={styles.tabs}>
-        {(["holidays", "shifts", "forms", "pdf-forms", "users", "depots", "offsite", "customers"] as const).map((t) => (
-          <TouchableOpacity
-            key={t}
-            testID={`admin-tab-${t}`}
-            onPress={() => setTab(t)}
-            style={[styles.tab, tab === t && styles.tabActive]}
-          >
-            <Text style={[styles.tabText, tab === t && styles.tabTextActive]}>
-              {t === "offsite"
-                ? `off-site${offsite.length ? ` · ${offsite.length}` : ""}`
-                : t === "pdf-forms"
-                ? "PDF"
-                : t}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+          {/* Main content area */}
+          <View style={styles.deskMain}>
+            <View style={styles.deskTopbar}>
+              <Text style={[typography.h2, { color: colors.primary }]}>{tabLabels[tab]}</Text>
+              <View style={{ flex: 1 }} />
+              <View style={styles.adminBadge}>
+                <View style={styles.adminAvatar}>
+                  <Text style={{ color: "#fff", fontWeight: "700" }}>
+                    {user?.name?.[0]?.toUpperCase() || "A"}
+                  </Text>
+                </View>
+                <View style={{ marginLeft: 8 }}>
+                  <Text style={{ fontWeight: "700", color: colors.primary, fontSize: 13 }}>
+                    {user?.name}
+                  </Text>
+                  <Text style={[typography.small, { fontSize: 11, color: colors.textMuted }]}>
+                    Admin
+                  </Text>
+                </View>
+              </View>
+            </View>
 
-      <ScrollView contentContainerStyle={styles.list}>
+            {/* Metric strip */}
+            <View style={styles.deskMetrics}>
+              <DeskMetric label="Pending holidays" value={pendingHolidays} accent={colors.brand} icon="calendar" />
+              <DeskMetric label="Approved" value={approvedHolidays} accent={colors.success} icon="check-circle" />
+              <DeskMetric label="Off-site clock-ins" value={offsiteCount} accent={colors.alert} icon="alert-circle" />
+              <DeskMetric label="Staff" value={staffCount} accent={colors.primary as any} icon="users" />
+            </View>
+
+            <ScrollView contentContainerStyle={styles.deskContent}>
+              {renderTabContent()}
+            </ScrollView>
+          </View>
+        </View>
+      ) : (
+        // ====== MOBILE LAYOUT (existing) ======
+        <>
+          <View style={styles.header}>
+            <TouchableOpacity onPress={() => router.back()}>
+              <Feather name="x" size={24} color={colors.primary} />
+            </TouchableOpacity>
+            <Text style={[typography.h3, { marginLeft: 12 }]}>Admin Panel</Text>
+          </View>
+
+          <View style={styles.tabs}>
+            {(["holidays", "shifts", "forms", "pdf-forms", "users", "depots", "offsite", "customers"] as const).map((t) => (
+              <TouchableOpacity
+                key={t}
+                testID={`admin-tab-${t}`}
+                onPress={() => setTab(t)}
+                style={[styles.tab, tab === t && styles.tabActive]}
+              >
+                <Text style={[styles.tabText, tab === t && styles.tabTextActive]}>
+                  {t === "offsite"
+                    ? `off-site${offsite.length ? ` · ${offsite.length}` : ""}`
+                    : t === "pdf-forms"
+                    ? "PDF"
+                    : t}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <ScrollView contentContainerStyle={styles.list}>
+            {renderTabContent()}
+          </ScrollView>
+        </>
+      )}
+    </SafeAreaView>
+  );
+
+  function renderTabContent() {
+    return (
+      <>
         {tab === "holidays" && (
           <>
             {/* Team Holiday Calendar */}
@@ -1011,7 +1153,6 @@ export default function AdminScreen() {
             ))}
           </>
         )}
-      </ScrollView>
 
       {/* Shift Modal */}
       <Modal visible={shiftModal} animationType="slide" transparent onRequestClose={() => setShiftModal(false)}>
@@ -1666,8 +1807,9 @@ export default function AdminScreen() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
-  );
+    </>
+    );
+  }
 }
 
 function formatBytesAdmin(n: number) {
@@ -1675,6 +1817,34 @@ function formatBytesAdmin(n: number) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function DeskMetric({
+  label,
+  value,
+  accent,
+  icon,
+}: {
+  label: string;
+  value: number;
+  accent: string;
+  icon: any;
+}) {
+  return (
+    <View style={styles.deskMetricCard}>
+      <View style={[styles.deskMetricIcon, { backgroundColor: `${accent}22` }]}>
+        <Feather name={icon} size={18} color={accent} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={[typography.small, { color: colors.textMuted, fontSize: 11, fontWeight: "600" }]}>
+          {label.toUpperCase()}
+        </Text>
+        <Text style={{ color: colors.primary, fontSize: 24, fontWeight: "800", marginTop: 2 }}>
+          {value}
+        </Text>
+      </View>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -1697,4 +1867,93 @@ const styles = StyleSheet.create({
   userRow: { padding: 10, borderRadius: radius.md, backgroundColor: colors.surface, marginBottom: 4 },
   userRowActive: { backgroundColor: colors.brandSoft, borderWidth: 1, borderColor: colors.brand },
   typeChip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.pill, backgroundColor: colors.surface },
+
+  // ===== Desktop layout (Connecteam-style) =====
+  deskRoot: { flex: 1, flexDirection: "row", backgroundColor: "#F6F8FB" },
+  sidebar: {
+    width: 240,
+    backgroundColor: "#fff",
+    paddingHorizontal: 14,
+    paddingVertical: 18,
+    borderRightWidth: 1,
+    borderRightColor: colors.border,
+  },
+  sidebarLogo: { flexDirection: "row", alignItems: "center", marginBottom: 24, paddingHorizontal: 4 },
+  logoMark: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: colors.brand,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  logoText: { marginLeft: 10, fontWeight: "800", fontSize: 18, color: colors.primary },
+  sidebarSection: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: colors.textMuted,
+    letterSpacing: 1,
+    marginTop: 14,
+    marginBottom: 6,
+    paddingHorizontal: 8,
+  },
+  sideNav: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 8,
+    marginBottom: 2,
+  },
+  sideNavActive: { backgroundColor: colors.brandSoft },
+  sideNavText: { marginLeft: 10, color: colors.textMuted, fontWeight: "600", fontSize: 13 },
+  sideNavTextActive: { color: colors.brand },
+  deskMain: { flex: 1, backgroundColor: "#F6F8FB" },
+  deskTopbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 28,
+    paddingVertical: 18,
+    backgroundColor: "#fff",
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  adminBadge: { flexDirection: "row", alignItems: "center" },
+  adminAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: colors.brand,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  deskMetrics: {
+    flexDirection: "row",
+    gap: 16,
+    paddingHorizontal: 28,
+    paddingTop: 20,
+    paddingBottom: 4,
+    flexWrap: "wrap",
+  },
+  deskMetricCard: {
+    flex: 1,
+    minWidth: 180,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  deskMetricIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  deskContent: { paddingHorizontal: 28, paddingTop: 20, paddingBottom: 40, gap: spacing.sm },
 });
