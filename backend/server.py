@@ -7,101 +7,40 @@ load_dotenv(ROOT_DIR / ".env")
 import os
 import io
 import uuid
-import bcrypt
-import jwt
 import asyncio
-import logging
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Any, Dict
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
-from bson import ObjectId
 
-# ----------------- DB -----------------
-mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
-
-JWT_ALGORITHM = "HS256"
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("staff-app")
+# Shared dependencies (DB, auth, helpers) — single source of truth in deps.py
+from deps import (
+    db,
+    client,
+    logger,
+    JWT_ALGORITHM,
+    hash_password,
+    verify_password,
+    now_utc,
+    get_jwt_secret,
+    create_access_token,
+    serialize,
+    get_current_user,
+    require_admin,
+    _validate_iso_date,
+)
+# Keep bcrypt/jwt imports usable for legacy in-file logic (some routes call them directly)
+import bcrypt  # noqa: F401
+import jwt  # noqa: F401
+from bson import ObjectId  # noqa: F401
 
 # ----------------- Helpers -----------------
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-
-def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-
-
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def get_jwt_secret() -> str:
-    return os.environ["JWT_SECRET"]
-
-
-def create_access_token(user_id: str, email: str, role: str) -> str:
-    payload = {
-        "sub": user_id,
-        "email": email,
-        "role": role,
-        "exp": now_utc() + timedelta(hours=12),
-        "type": "access",
-    }
-    return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
-
-
-def serialize(doc: Optional[dict]) -> Optional[dict]:
-    if not doc:
-        return doc
-    doc = {k: v for k, v in doc.items() if k != "_id"}
-    for k, v in list(doc.items()):
-        if isinstance(v, ObjectId):
-            doc[k] = str(v)
-        elif isinstance(v, datetime):
-            # Motor returns naive datetimes (no tzinfo) — they're stored as UTC by us via
-            # now_utc(). Treat naive datetimes as UTC so JSON output always includes a tz
-            # marker; without this JS parses "2026-05-11T14:00:00" as LOCAL time and shows
-            # a 1-hour offset (e.g. on the clock-in timer in BST/IST).
-            if v.tzinfo is None:
-                v = v.replace(tzinfo=timezone.utc)
-            doc[k] = v.isoformat()
-    return doc
-
-
-# ----------------- Auth dep -----------------
-async def get_current_user(request: Request) -> dict:
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else request.cookies.get("access_token")
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    try:
-        payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
-        if payload.get("type") != "access":
-            raise HTTPException(status_code=401, detail="Invalid token type")
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    user = await db.users.find_one({"id": payload["sub"]})
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    user.pop("password_hash", None)
-    return serialize(user)
-
-
-async def require_admin(user: dict = Depends(get_current_user)) -> dict:
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return user
+# All helpers (hash_password, verify_password, now_utc, get_jwt_secret,
+# create_access_token, serialize, get_current_user, require_admin,
+# _validate_iso_date) live in deps.py — imported above for use by this file.
 
 
 # ----------------- Models -----------------
@@ -247,36 +186,9 @@ class BankHolidayIn(BaseModel):
     hours: float = 8.0  # default 8 hours per bank holiday
 
 
-class ContactIn(BaseModel):
-    name: str
-    role: Optional[str] = None
-    phone: Optional[str] = None
-    email: Optional[str] = None
-
-
-class SiteIn(BaseModel):
-    name: str
-    address: Optional[str] = None
-    eircode: Optional[str] = None  # A4: Irish postcode (or any postcode-like text)
-    lat: Optional[float] = None
-    lng: Optional[float] = None
-    radius_m: Optional[float] = 200.0
-    description: Optional[str] = None
-
-
-class CustomerIn(BaseModel):
-    name: str
-    company: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    address: Optional[str] = None  # A4: full address line
-    eircode: Optional[str] = None  # A4: Irish postcode / postcode text
-
-
-class CustomerNoteIn(BaseModel):
-    body: str
-    category: str = "general"  # general | access | hazard | equipment | other
-    pinned: bool = False
+# Customer/Contact/Site/CustomerNote models are now defined in routers/customers.py
+# and re-imported here for any internal references in this file (none currently).
+from routers.customers import ContactIn, SiteIn, CustomerIn, CustomerNoteIn  # noqa: E402
 
 
 class PdfFormTemplateIn(BaseModel):
@@ -370,14 +282,7 @@ async def update_entitlement(user_id: str, value: int, _=Depends(require_admin))
     return {"ok": True, "holiday_entitlement": int(value)}
 
 
-def _validate_iso_date(s: Optional[str], field: str) -> Optional[str]:
-    if s is None or s == "":
-        return s
-    try:
-        datetime.fromisoformat(s)
-        return s
-    except Exception:
-        raise HTTPException(status_code=400, detail=f"{field} must be YYYY-MM-DD")
+# `_validate_iso_date` is now imported from deps.py at the top of this file.
 
 
 @api.patch("/users/me/profile")
@@ -2317,30 +2222,7 @@ async def scan_alerts(current=Depends(require_admin)):
 
 
 # ---------- Depots ----------
-@api.post("/depots")
-async def create_depot(body: DepotIn, _=Depends(require_admin)):
-    d = {
-        "id": str(uuid.uuid4()),
-        "name": body.name,
-        "lat": body.lat,
-        "lng": body.lng,
-        "radius_m": body.radius_m,
-        "created_at": now_utc(),
-    }
-    await db.depots.insert_one(d)
-    return serialize(d)
-
-
-@api.get("/depots")
-async def list_depots(_=Depends(get_current_user)):
-    docs = await db.depots.find().sort("name", 1).to_list(200)
-    return [serialize(d) for d in docs]
-
-
-@api.delete("/depots/{did}")
-async def delete_depot(did: str, _=Depends(require_admin)):
-    await db.depots.delete_one({"id": did})
-    return {"ok": True}
+# Depot endpoints moved to routers/customers.py
 
 
 # ---------- Weekly Digest ----------
@@ -2524,130 +2406,7 @@ async def download_digest(did: str, _=Depends(require_admin)):
     return StreamingResponse(out, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{d["filename"]}"'})
 
 
-# ----------------- Customers / CRM -----------------
-@api.get("/customers")
-async def list_customers(_=Depends(get_current_user)):
-    docs = await db.customers.find().sort("name", 1).to_list(500)
-    return [serialize(d) for d in docs]
-
-
-@api.get("/customers/{cid}")
-async def get_customer(cid: str, _=Depends(get_current_user)):
-    doc = await db.customers.find_one({"id": cid})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    return serialize(doc)
-
-
-@api.post("/customers")
-async def create_customer(body: CustomerIn, _=Depends(require_admin)):
-    doc = {
-        "id": str(uuid.uuid4()),
-        "name": body.name,
-        "company": body.company,
-        "email": body.email,
-        "phone": body.phone,
-        "address": body.address,
-        "eircode": body.eircode,
-        "contacts": [],
-        "sites": [],
-        "created_at": now_utc(),
-    }
-    await db.customers.insert_one(doc)
-    return serialize(doc)
-
-
-@api.patch("/customers/{cid}")
-async def update_customer(cid: str, body: CustomerIn, _=Depends(require_admin)):
-    res = await db.customers.update_one({"id": cid}, {"$set": body.dict()})
-    if res.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    doc = await db.customers.find_one({"id": cid})
-    return serialize(doc)
-
-
-@api.delete("/customers/{cid}")
-async def delete_customer(cid: str, _=Depends(require_admin)):
-    await db.customers.delete_one({"id": cid})
-    await db.customer_notes.delete_many({"customer_id": cid})
-    return {"ok": True}
-
-
-@api.post("/customers/{cid}/contacts")
-async def add_contact(cid: str, body: ContactIn, _=Depends(require_admin)):
-    contact = {"id": str(uuid.uuid4()), **body.dict()}
-    res = await db.customers.update_one({"id": cid}, {"$push": {"contacts": contact}})
-    if res.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    return contact
-
-
-@api.delete("/customers/{cid}/contacts/{coid}")
-async def remove_contact(cid: str, coid: str, _=Depends(require_admin)):
-    await db.customers.update_one({"id": cid}, {"$pull": {"contacts": {"id": coid}}})
-    return {"ok": True}
-
-
-@api.post("/customers/{cid}/sites")
-async def add_site(cid: str, body: SiteIn, _=Depends(require_admin)):
-    site = {"id": str(uuid.uuid4()), **body.dict()}
-    res = await db.customers.update_one({"id": cid}, {"$push": {"sites": site}})
-    if res.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    return site
-
-
-@api.delete("/customers/{cid}/sites/{sid}")
-async def remove_site(cid: str, sid: str, _=Depends(require_admin)):
-    await db.customers.update_one({"id": cid}, {"$pull": {"sites": {"id": sid}}})
-    return {"ok": True}
-
-
-@api.get("/customers/{cid}/notes")
-async def list_customer_notes(cid: str, _=Depends(get_current_user)):
-    docs = await db.customer_notes.find({"customer_id": cid}).sort([("pinned", -1), ("created_at", -1)]).to_list(500)
-    return [serialize(d) for d in docs]
-
-
-@api.post("/customers/{cid}/notes")
-async def add_customer_note(cid: str, body: CustomerNoteIn, current=Depends(get_current_user)):
-    if not await db.customers.find_one({"id": cid}):
-        raise HTTPException(status_code=404, detail="Customer not found")
-    note = {
-        "id": str(uuid.uuid4()),
-        "customer_id": cid,
-        "body": body.body,
-        "category": body.category,
-        "pinned": body.pinned,
-        "author_id": current["id"],
-        "author_name": current["name"],
-        "created_at": now_utc(),
-    }
-    await db.customer_notes.insert_one(note)
-    return serialize(note)
-
-
-@api.patch("/customers/{cid}/notes/{nid}")
-async def update_customer_note(cid: str, nid: str, body: CustomerNoteIn, current=Depends(get_current_user)):
-    note = await db.customer_notes.find_one({"id": nid, "customer_id": cid})
-    if not note:
-        raise HTTPException(status_code=404, detail="Note not found")
-    if current.get("role") != "admin" and note["author_id"] != current["id"]:
-        raise HTTPException(status_code=403, detail="Not allowed")
-    await db.customer_notes.update_one({"id": nid}, {"$set": body.dict()})
-    doc = await db.customer_notes.find_one({"id": nid})
-    return serialize(doc)
-
-
-@api.delete("/customers/{cid}/notes/{nid}")
-async def delete_customer_note(cid: str, nid: str, current=Depends(get_current_user)):
-    note = await db.customer_notes.find_one({"id": nid, "customer_id": cid})
-    if not note:
-        raise HTTPException(status_code=404, detail="Note not found")
-    if current.get("role") != "admin" and note["author_id"] != current["id"]:
-        raise HTTPException(status_code=403, detail="Not allowed")
-    await db.customer_notes.delete_one({"id": nid})
-    return {"ok": True}
+# ----------------- Customers / CRM moved to routers/customers.py -----------------
 
 
 # ----------------- PDF Fillable Forms -----------------
@@ -3612,6 +3371,11 @@ async def on_shutdown():
 @api.get("/")
 async def root():
     return {"service": "StaffHub API", "ok": True}
+
+
+# ----------------- Mount modular routers (extracted from this file) -----------------
+from routers import customers as _customers_router  # noqa: E402
+api.include_router(_customers_router.router)
 
 
 app.include_router(api)
