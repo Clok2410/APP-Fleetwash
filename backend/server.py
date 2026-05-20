@@ -188,6 +188,7 @@ class FormTemplateIn(BaseModel):
     checklist_items: Optional[List[ChecklistItemIn]] = None
     target_percent: Optional[float] = None  # e.g. 100.0 means all items must be done
     depot_id: Optional[str] = None  # optional: tie checklist to a depot
+    assigned_user_ids: Optional[List[str]] = None  # empty/None = visible to ALL staff (back-compat)
 
 
 class FormSubmissionIn(BaseModel):
@@ -244,6 +245,11 @@ class PdfFormTemplateIn(BaseModel):
     title: str
     description: Optional[str] = None
     pdf_base64: str  # full PDF as base64
+    assigned_user_ids: Optional[List[str]] = None  # empty/None = visible to ALL staff (back-compat)
+
+
+class TemplateAssignIn(BaseModel):
+    assigned_user_ids: List[str] = []  # empty list = visible to ALL staff
 
 
 class PdfFormSubmissionIn(BaseModel):
@@ -834,6 +840,7 @@ async def create_template(body: FormTemplateIn, current=Depends(require_admin)):
         "checklist_items": [c.dict() for c in (body.checklist_items or [])],
         "target_percent": body.target_percent,
         "depot_id": body.depot_id,
+        "assigned_user_ids": list(body.assigned_user_ids or []),
         "created_by": current["id"],
         "created_by_name": current["name"],
         "created_at": now_utc(),
@@ -896,9 +903,25 @@ async def template_stats(tid: str, date_from: Optional[str] = None, date_to: Opt
 
 
 @api.get("/forms/templates")
-async def list_templates(_=Depends(get_current_user)):
+async def list_templates(current=Depends(get_current_user)):
     docs = await db.form_templates.find().sort("created_at", -1).to_list(500)
+    # Admin sees all; staff sees only templates assigned to them (empty assigned_user_ids = visible to ALL)
+    if current.get("role") != "admin":
+        uid = current["id"]
+        docs = [d for d in docs if not d.get("assigned_user_ids") or uid in (d.get("assigned_user_ids") or [])]
     return [serialize(d) for d in docs]
+
+
+@api.patch("/forms/templates/{tid}/assign")
+async def assign_template(tid: str, body: TemplateAssignIn, _=Depends(require_admin)):
+    res = await db.form_templates.update_one(
+        {"id": tid},
+        {"$set": {"assigned_user_ids": list(body.assigned_user_ids or [])}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Template not found")
+    doc = await db.form_templates.find_one({"id": tid})
+    return serialize(doc)
 
 
 @api.get("/forms/templates/{tid}")
@@ -920,6 +943,11 @@ async def create_submission(body: FormSubmissionIn, current=Depends(get_current_
     tpl = await db.form_templates.find_one({"id": body.template_id})
     if not tpl:
         raise HTTPException(status_code=404, detail="Template not found")
+    # Staff can only submit templates assigned to them (empty list = all)
+    if current.get("role") != "admin":
+        assigned = tpl.get("assigned_user_ids") or []
+        if assigned and current["id"] not in assigned:
+            raise HTTPException(status_code=403, detail="Not assigned to you")
     sub = {
         "id": str(uuid.uuid4()),
         "template_id": body.template_id,
@@ -2046,6 +2074,7 @@ async def create_pdf_form_template(body: PdfFormTemplateIn, _=Depends(require_ad
         "has_acroform": len(fields) > 0,
         "field_count": len(fields),
         "size_bytes": len(pdf_bytes),
+        "assigned_user_ids": list(body.assigned_user_ids or []),
         "created_by": current["id"],
         "created_by_name": current.get("name"),
         "created_at": now_utc(),
@@ -2057,8 +2086,12 @@ async def create_pdf_form_template(body: PdfFormTemplateIn, _=Depends(require_ad
 
 
 @api.get("/pdf-forms/templates")
-async def list_pdf_form_templates(_=Depends(get_current_user)):
+async def list_pdf_form_templates(current=Depends(get_current_user)):
     docs = await db.pdf_form_templates.find().sort("created_at", -1).to_list(500)
+    # Admin sees all; staff sees only templates assigned to them (empty assigned_user_ids = visible to ALL)
+    if current.get("role") != "admin":
+        uid = current["id"]
+        docs = [d for d in docs if not d.get("assigned_user_ids") or uid in (d.get("assigned_user_ids") or [])]
     out = []
     for d in docs:
         s = serialize(d)
@@ -2067,11 +2100,30 @@ async def list_pdf_form_templates(_=Depends(get_current_user)):
     return out
 
 
+@api.patch("/pdf-forms/templates/{tid}/assign")
+async def assign_pdf_template(tid: str, body: TemplateAssignIn, _=Depends(require_admin)):
+    res = await db.pdf_form_templates.update_one(
+        {"id": tid},
+        {"$set": {"assigned_user_ids": list(body.assigned_user_ids or [])}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Template not found")
+    doc = await db.pdf_form_templates.find_one({"id": tid})
+    s = serialize(doc)
+    s.pop("pdf_base64", None)
+    return s
+
+
 @api.get("/pdf-forms/templates/{tid}")
-async def get_pdf_form_template(tid: str, _=Depends(get_current_user)):
+async def get_pdf_form_template(tid: str, current=Depends(get_current_user)):
     doc = await db.pdf_form_templates.find_one({"id": tid})
     if not doc:
         raise HTTPException(status_code=404, detail="Template not found")
+    # Staff can only access templates assigned to them (empty list = all)
+    if current.get("role") != "admin":
+        assigned = doc.get("assigned_user_ids") or []
+        if assigned and current["id"] not in assigned:
+            raise HTTPException(status_code=403, detail="Not assigned to you")
     return serialize(doc)
 
 
@@ -2090,6 +2142,11 @@ async def fill_pdf_form(tid: str, body: PdfFormSubmissionIn, current=Depends(get
     tmpl = await db.pdf_form_templates.find_one({"id": tid})
     if not tmpl:
         raise HTTPException(status_code=404, detail="Template not found")
+    # Staff can only submit templates assigned to them (empty list = all)
+    if current.get("role") != "admin":
+        assigned = tmpl.get("assigned_user_ids") or []
+        if assigned and current["id"] not in assigned:
+            raise HTTPException(status_code=403, detail="Not assigned to you")
     try:
         pdf_bytes = base64.b64decode(tmpl["pdf_base64"])
     except Exception:
@@ -2183,6 +2240,11 @@ async def start_pdf_session(tid: str, body: PdfSessionStartIn, current=Depends(g
     tmpl = await db.pdf_form_templates.find_one({"id": tid})
     if not tmpl:
         raise HTTPException(status_code=404, detail="Template not found")
+    # Staff can only start sessions for templates assigned to them (empty list = all)
+    if current.get("role") != "admin":
+        assigned = tmpl.get("assigned_user_ids") or []
+        if assigned and current["id"] not in assigned:
+            raise HTTPException(status_code=403, detail="Not assigned to you")
     sess = {
         "id": str(uuid.uuid4()),
         "template_id": tid,

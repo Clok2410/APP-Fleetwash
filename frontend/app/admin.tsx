@@ -38,6 +38,8 @@ export default function AdminScreen() {
   const [pdfDesc, setPdfDesc] = useState("");
   const [pdfPicked, setPdfPicked] = useState<{ name: string; base64: string } | null>(null);
   const [pdfModalOpen, setPdfModalOpen] = useState(false);
+  const [pdfAssignedIds, setPdfAssignedIds] = useState<string[]>([]); // empty = assign to ALL
+  const [assignModalFor, setAssignModalFor] = useState<any>(null); // PDF template being assigned
   const [depots, setDepots] = useState<any[]>([]);
   const [offsite, setOffsite] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -274,22 +276,49 @@ export default function AdminScreen() {
         title: pdfTitle,
         description: pdfDesc,
         pdf_base64: pdfPicked.base64,
+        assigned_user_ids: pdfAssignedIds,
       });
       setPdfModalOpen(false);
       setPdfPicked(null);
       setPdfTitle("");
       setPdfDesc("");
+      setPdfAssignedIds([]);
       await load();
+      const assignedMsg = pdfAssignedIds.length
+        ? ` Assigned to ${pdfAssignedIds.length} staff.`
+        : " Visible to all staff.";
       if (data.has_acroform) {
-        Alert.alert("Uploaded", `Detected ${data.field_count} fillable fields.`);
+        Alert.alert("Uploaded", `Detected ${data.field_count} fillable fields.${assignedMsg}`);
       } else {
-        Alert.alert("Uploaded", "No AcroForm fields were detected. Staff can still view it but not fill it.");
+        Alert.alert("Uploaded", `No AcroForm fields were detected.${assignedMsg}`);
       }
     } catch (e: any) {
       Alert.alert("Upload failed", e.response?.data?.detail || "Try again");
     } finally {
       setPdfUploading(false);
     }
+  };
+
+  const saveAssignment = async () => {
+    if (!assignModalFor) return;
+    try {
+      await api.patch(`/pdf-forms/templates/${assignModalFor.id}/assign`, {
+        assigned_user_ids: assignModalFor.assigned_user_ids || [],
+      });
+      setAssignModalFor(null);
+      await load();
+      Alert.alert("Saved", "Assignment updated.");
+    } catch (e: any) {
+      Alert.alert("Failed", e.response?.data?.detail || "Try again");
+    }
+  };
+
+  const toggleAssign = (userId: string) => {
+    if (!assignModalFor) return;
+    const cur = new Set<string>(assignModalFor.assigned_user_ids || []);
+    if (cur.has(userId)) cur.delete(userId);
+    else cur.add(userId);
+    setAssignModalFor({ ...assignModalFor, assigned_user_ids: Array.from(cur) });
   };
 
   return (
@@ -559,7 +588,10 @@ export default function AdminScreen() {
                 No PDF templates yet.
               </Text>
             ) : (
-              pdfTemplates.map((t) => (
+              pdfTemplates.map((t) => {
+                const assigned: string[] = t.assigned_user_ids || [];
+                const visible = assigned.length === 0 ? "All staff" : `${assigned.length} staff`;
+                return (
                 <View key={t.id} style={styles.card} testID={`pdf-tpl-${t.id}`}>
                   <View style={[styles.smBtn, { backgroundColor: t.has_acroform ? "#FEE2E2" : colors.surface, width: 36, height: 36, borderRadius: 18 }]}>
                     <Feather name="file-text" size={16} color={t.has_acroform ? "#B91C1C" : colors.textMuted} />
@@ -571,7 +603,18 @@ export default function AdminScreen() {
                         ? `${t.field_count} fields · ${formatBytesAdmin(t.size_bytes || 0)}`
                         : "No AcroForm fields detected"}
                     </Text>
+                    <Text style={[typography.small, { marginTop: 2, color: assigned.length === 0 ? colors.textMuted : colors.brand, fontWeight: "600" }]}>
+                      <Feather name="users" size={11} color={assigned.length === 0 ? colors.textMuted : colors.brand} />{"  "}
+                      Assigned: {visible}
+                    </Text>
                   </View>
+                  <TouchableOpacity
+                    testID={`pdf-assign-${t.id}`}
+                    onPress={() => setAssignModalFor({ ...t, assigned_user_ids: assigned })}
+                    style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.brandSoft, borderRadius: 999, marginRight: 6 }}
+                  >
+                    <Text style={{ fontSize: 11, fontWeight: "700", color: colors.brand }}>Assign</Text>
+                  </TouchableOpacity>
                   <TouchableOpacity
                     onPress={async () => {
                       Alert.alert("Delete?", `Delete ${t.title}?`, [
@@ -590,7 +633,8 @@ export default function AdminScreen() {
                     <Feather name="trash-2" size={14} color={colors.alert} />
                   </TouchableOpacity>
                 </View>
-              ))
+                );
+              })
             )}
           </>
         )}
@@ -1187,6 +1231,60 @@ export default function AdminScreen() {
                 </TouchableOpacity>
               </WebDropZone>
             </View>
+            {/* Assign to staff (multi-select). Empty = visible to ALL */}
+            <Text style={[typography.label, { marginTop: 14 }]}>
+              <Feather name="users" size={12} /> Assign to staff{" "}
+              <Text style={{ color: colors.textMuted, fontWeight: "400" }}>
+                ({pdfAssignedIds.length === 0 ? "all staff" : `${pdfAssignedIds.length} selected`})
+              </Text>
+            </Text>
+            <Text style={[typography.small, { marginTop: 2, marginBottom: 6, color: colors.textMuted }]}>
+              Leave empty to show this form to every staff member.
+            </Text>
+            <View style={{ maxHeight: 180, borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 6 }}>
+              <ScrollView nestedScrollEnabled style={{ maxHeight: 168 }}>
+                {users
+                  .filter((u) => u.role !== "admin")
+                  .map((u) => {
+                    const sel = pdfAssignedIds.includes(u.id);
+                    return (
+                      <TouchableOpacity
+                        key={u.id}
+                        testID={`assign-user-${u.id}`}
+                        onPress={() =>
+                          setPdfAssignedIds((prev) =>
+                            prev.includes(u.id) ? prev.filter((x) => x !== u.id) : [...prev, u.id]
+                          )
+                        }
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          paddingVertical: 8,
+                          paddingHorizontal: 6,
+                        }}
+                      >
+                        <View
+                          style={{
+                            width: 20,
+                            height: 20,
+                            borderRadius: 4,
+                            borderWidth: 2,
+                            borderColor: sel ? colors.brand : colors.border,
+                            backgroundColor: sel ? colors.brand : "transparent",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            marginRight: 10,
+                          }}
+                        >
+                          {sel ? <Feather name="check" size={14} color="#fff" /> : null}
+                        </View>
+                        <Text style={{ flex: 1, color: colors.primary, fontWeight: "600" }}>{u.name}</Text>
+                        <Text style={[typography.small, { color: colors.textMuted }]}>{u.email}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+              </ScrollView>
+            </View>
             <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
               <TouchableOpacity
                 style={[styles.modalBtn, { backgroundColor: colors.surface }]}
@@ -1195,6 +1293,7 @@ export default function AdminScreen() {
                   setPdfPicked(null);
                   setPdfTitle("");
                   setPdfDesc("");
+                  setPdfAssignedIds([]);
                 }}
               >
                 <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
@@ -1208,6 +1307,75 @@ export default function AdminScreen() {
                 <Text style={{ color: "#fff", fontWeight: "700" }}>
                   {pdfUploading ? "Uploading…" : "Upload"}
                 </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Assign existing PDF template to staff */}
+      <Modal visible={!!assignModalFor} transparent animationType="slide" onRequestClose={() => setAssignModalFor(null)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={typography.h3}>Assign to Staff</Text>
+            <Text style={[typography.small, { marginTop: 4, marginBottom: 8 }]} numberOfLines={1}>
+              {assignModalFor?.title}
+            </Text>
+            <Text style={[typography.small, { marginBottom: 6, color: colors.textMuted }]}>
+              {(assignModalFor?.assigned_user_ids || []).length === 0
+                ? "Currently visible to ALL staff."
+                : `Currently assigned to ${(assignModalFor?.assigned_user_ids || []).length} staff.`}
+            </Text>
+            <View style={{ maxHeight: 320, borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 6 }}>
+              <ScrollView nestedScrollEnabled style={{ maxHeight: 308 }}>
+                {users
+                  .filter((u) => u.role !== "admin")
+                  .map((u) => {
+                    const sel = (assignModalFor?.assigned_user_ids || []).includes(u.id);
+                    return (
+                      <TouchableOpacity
+                        key={u.id}
+                        testID={`assign-modal-user-${u.id}`}
+                        onPress={() => toggleAssign(u.id)}
+                        style={{ flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 6 }}
+                      >
+                        <View
+                          style={{
+                            width: 22,
+                            height: 22,
+                            borderRadius: 4,
+                            borderWidth: 2,
+                            borderColor: sel ? colors.brand : colors.border,
+                            backgroundColor: sel ? colors.brand : "transparent",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            marginRight: 10,
+                          }}
+                        >
+                          {sel ? <Feather name="check" size={14} color="#fff" /> : null}
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: colors.primary, fontWeight: "600" }}>{u.name}</Text>
+                          <Text style={[typography.small, { color: colors.textMuted }]}>{u.email}</Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+              </ScrollView>
+            </View>
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: colors.surface }]}
+                onPress={() => setAssignModalFor(null)}
+              >
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="assign-save"
+                style={[styles.modalBtn, { backgroundColor: colors.primary }]}
+                onPress={saveAssignment}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Save</Text>
               </TouchableOpacity>
             </View>
           </View>
