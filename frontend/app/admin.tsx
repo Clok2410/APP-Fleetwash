@@ -461,6 +461,7 @@ export default function AdminScreen() {
 
   const { width: winW } = useWindowDimensions();
   const [forceDesktop, setForceDesktop] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const isDesktop = forceDesktop || (Platform.OS === "web" && winW >= 1024);
 
   const tabIcons: Record<string, any> = {
@@ -496,70 +497,102 @@ export default function AdminScreen() {
         // ====== DESKTOP LAYOUT (Connecteam-style) ======
         <View style={styles.deskRoot}>
           {/* Sidebar */}
-          <View style={styles.sidebar}>
-            <View style={styles.sidebarLogo}>
+          <View style={[styles.sidebar, sidebarCollapsed && styles.sidebarCollapsed]}>
+            <View style={[styles.sidebarLogo, sidebarCollapsed && { justifyContent: "center" }]}>
               <View style={styles.logoMark}>
                 <Feather name="users" size={18} color="#fff" />
               </View>
-              <Text style={styles.logoText}>StaffHub</Text>
+              {!sidebarCollapsed && <Text style={styles.logoText}>StaffHub</Text>}
             </View>
-            <Text style={styles.sidebarSection}>MANAGE</Text>
+            <TouchableOpacity
+              testID="toggle-sidebar"
+              onPress={() => setSidebarCollapsed((v) => !v)}
+              style={[styles.sideNav, { justifyContent: sidebarCollapsed ? "center" : "flex-start", marginBottom: 6 }]}
+            >
+              <Feather
+                name={sidebarCollapsed ? "chevrons-right" : "chevrons-left"}
+                size={16}
+                color={colors.textMuted}
+              />
+              {!sidebarCollapsed && (
+                <Text style={styles.sideNavText}>Collapse</Text>
+              )}
+            </TouchableOpacity>
+            {!sidebarCollapsed && <Text style={styles.sidebarSection}>MANAGE</Text>}
             {(["holidays", "shifts", "offsite"] as const).map((t) => (
               <TouchableOpacity
                 key={t}
                 testID={`admin-tab-${t}`}
                 onPress={() => setTab(t)}
-                style={[styles.sideNav, tab === t && styles.sideNavActive]}
+                style={[
+                  styles.sideNav,
+                  tab === t && styles.sideNavActive,
+                  sidebarCollapsed && { justifyContent: "center" },
+                ]}
               >
                 <Feather name={tabIcons[t]} size={16} color={tab === t ? colors.brand : colors.textMuted} />
-                <Text style={[styles.sideNavText, tab === t && styles.sideNavTextActive]}>
-                  {tabLabels[t]}
-                </Text>
+                {!sidebarCollapsed && (
+                  <Text style={[styles.sideNavText, tab === t && styles.sideNavTextActive]}>
+                    {tabLabels[t]}
+                  </Text>
+                )}
               </TouchableOpacity>
             ))}
-            <Text style={styles.sidebarSection}>FORMS</Text>
+            {!sidebarCollapsed && <Text style={styles.sidebarSection}>FORMS</Text>}
             {(["forms", "pdf-forms"] as const).map((t) => (
               <TouchableOpacity
                 key={t}
                 testID={`admin-tab-${t}`}
                 onPress={() => setTab(t)}
-                style={[styles.sideNav, tab === t && styles.sideNavActive]}
+                style={[
+                  styles.sideNav,
+                  tab === t && styles.sideNavActive,
+                  sidebarCollapsed && { justifyContent: "center" },
+                ]}
               >
                 <Feather name={tabIcons[t]} size={16} color={tab === t ? colors.brand : colors.textMuted} />
-                <Text style={[styles.sideNavText, tab === t && styles.sideNavTextActive]}>
-                  {tabLabels[t]}
-                </Text>
+                {!sidebarCollapsed && (
+                  <Text style={[styles.sideNavText, tab === t && styles.sideNavTextActive]}>
+                    {tabLabels[t]}
+                  </Text>
+                )}
               </TouchableOpacity>
             ))}
-            <Text style={styles.sidebarSection}>ORGANISATION</Text>
+            {!sidebarCollapsed && <Text style={styles.sidebarSection}>ORGANISATION</Text>}
             {(["users", "depots", "customers"] as const).map((t) => (
               <TouchableOpacity
                 key={t}
                 testID={`admin-tab-${t}`}
                 onPress={() => setTab(t)}
-                style={[styles.sideNav, tab === t && styles.sideNavActive]}
+                style={[
+                  styles.sideNav,
+                  tab === t && styles.sideNavActive,
+                  sidebarCollapsed && { justifyContent: "center" },
+                ]}
               >
                 <Feather name={tabIcons[t]} size={16} color={tab === t ? colors.brand : colors.textMuted} />
-                <Text style={[styles.sideNavText, tab === t && styles.sideNavTextActive]}>
-                  {tabLabels[t]}
-                </Text>
+                {!sidebarCollapsed && (
+                  <Text style={[styles.sideNavText, tab === t && styles.sideNavTextActive]}>
+                    {tabLabels[t]}
+                  </Text>
+                )}
               </TouchableOpacity>
             ))}
             <View style={{ flex: 1 }} />
             <TouchableOpacity
               testID="exit-desktop"
               onPress={() => setForceDesktop(false)}
-              style={[styles.sideNav, { marginTop: 12 }]}
+              style={[styles.sideNav, { marginTop: 12, justifyContent: sidebarCollapsed ? "center" : "flex-start" }]}
             >
               <Feather name="smartphone" size={16} color={colors.textMuted} />
-              <Text style={styles.sideNavText}>Mobile view</Text>
+              {!sidebarCollapsed && <Text style={styles.sideNavText}>Mobile view</Text>}
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => router.back()}
-              style={styles.sideNav}
+              style={[styles.sideNav, sidebarCollapsed && { justifyContent: "center" }]}
             >
               <Feather name="arrow-left" size={16} color={colors.textMuted} />
-              <Text style={styles.sideNavText}>Back to App</Text>
+              {!sidebarCollapsed && <Text style={styles.sideNavText}>Back to App</Text>}
             </TouchableOpacity>
           </View>
 
@@ -1975,6 +2008,10 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
     borderRightWidth: 1,
     borderRightColor: colors.border,
+  },
+  sidebarCollapsed: {
+    width: 64,
+    paddingHorizontal: 8,
   },
   sidebarLogo: { flexDirection: "row", alignItems: "center", marginBottom: 24, paddingHorizontal: 4 },
   logoMark: {
