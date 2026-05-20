@@ -117,6 +117,28 @@ class LoginIn(BaseModel):
     password: str
 
 
+class ProfileUpdateIn(BaseModel):
+    """Fields a staff member can edit on their own profile."""
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    dob: Optional[str] = None  # YYYY-MM-DD
+    pps_number: Optional[str] = None  # Irish PPS / national ID
+
+
+class AdminUserUpdateIn(BaseModel):
+    """Fields an admin can edit on any user's profile (in addition to their own)."""
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    dob: Optional[str] = None
+    pps_number: Optional[str] = None
+    start_date: Optional[str] = None  # YYYY-MM-DD employment start
+    employment_type: Optional[str] = None  # 'full_time' | 'part_time'
+    holiday_entitlement: Optional[int] = None
+    role: Optional[str] = None  # 'staff' | 'admin'
+
+
 class ClockNoteIn(BaseModel):
     note: Optional[str] = None
     location: Optional[str] = None
@@ -343,6 +365,155 @@ async def update_entitlement(user_id: str, value: int, _=Depends(require_admin))
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
     return {"ok": True, "holiday_entitlement": int(value)}
+
+
+def _validate_iso_date(s: Optional[str], field: str) -> Optional[str]:
+    if s is None or s == "":
+        return s
+    try:
+        datetime.fromisoformat(s)
+        return s
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"{field} must be YYYY-MM-DD")
+
+
+@api.patch("/users/me/profile")
+async def update_my_profile(body: ProfileUpdateIn, current=Depends(get_current_user)):
+    """Staff edits their own profile: name, email, phone, dob, pps_number."""
+    updates: Dict[str, Any] = {}
+    if body.name is not None and body.name.strip():
+        updates["name"] = body.name.strip()
+    if body.email is not None:
+        new_email = body.email.lower().strip()
+        if new_email != current.get("email"):
+            existing = await db.users.find_one({"email": new_email})
+            if existing:
+                raise HTTPException(status_code=400, detail="Email already in use")
+            updates["email"] = new_email
+    if body.phone is not None:
+        updates["phone"] = body.phone.strip() or None
+    if body.dob is not None:
+        _validate_iso_date(body.dob, "dob")
+        updates["dob"] = body.dob or None
+    if body.pps_number is not None:
+        updates["pps_number"] = body.pps_number.strip() or None
+    if not updates:
+        return serialize(current)
+    updates["profile_updated_at"] = now_utc()
+    await db.users.update_one({"id": current["id"]}, {"$set": updates})
+    doc = await db.users.find_one({"id": current["id"]}, {"password_hash": 0})
+    return serialize(doc)
+
+
+@api.patch("/users/{user_id}")
+async def admin_update_user(user_id: str, body: AdminUserUpdateIn, _=Depends(require_admin)):
+    """Admin updates any user's profile incl. start_date, employment_type, entitlement, role."""
+    user = await db.users.find_one({"id": user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    updates: Dict[str, Any] = {}
+    if body.name is not None and body.name.strip():
+        updates["name"] = body.name.strip()
+    if body.email is not None:
+        new_email = body.email.lower().strip()
+        if new_email != user.get("email"):
+            existing = await db.users.find_one({"email": new_email})
+            if existing:
+                raise HTTPException(status_code=400, detail="Email already in use")
+            updates["email"] = new_email
+    if body.phone is not None:
+        updates["phone"] = body.phone.strip() or None
+    if body.dob is not None:
+        _validate_iso_date(body.dob, "dob")
+        updates["dob"] = body.dob or None
+    if body.pps_number is not None:
+        updates["pps_number"] = body.pps_number.strip() or None
+    if body.start_date is not None:
+        _validate_iso_date(body.start_date, "start_date")
+        updates["start_date"] = body.start_date or None
+    if body.employment_type is not None:
+        if body.employment_type not in ("full_time", "part_time"):
+            raise HTTPException(status_code=400, detail="employment_type must be 'full_time' or 'part_time'")
+        updates["employment_type"] = body.employment_type
+    if body.holiday_entitlement is not None:
+        if body.holiday_entitlement < 0 or body.holiday_entitlement > 365:
+            raise HTTPException(status_code=400, detail="holiday_entitlement must be 0–365")
+        updates["holiday_entitlement"] = int(body.holiday_entitlement)
+    if body.role is not None:
+        if body.role not in ("staff", "admin"):
+            raise HTTPException(status_code=400, detail="role must be 'staff' or 'admin'")
+        updates["role"] = body.role
+    if not updates:
+        u2 = await db.users.find_one({"id": user_id}, {"password_hash": 0})
+        return serialize(u2)
+    updates["profile_updated_at"] = now_utc()
+    await db.users.update_one({"id": user_id}, {"$set": updates})
+    doc = await db.users.find_one({"id": user_id}, {"password_hash": 0})
+    return serialize(doc)
+
+
+@api.get("/users/me/eligibility")
+async def my_eligibility(current=Depends(get_current_user)):
+    """Compute sick-pay and bank-holiday eligibility for the current user.
+
+    Sick Pay (Ireland Statutory Sick Pay): requires 13 continuous weeks of employment
+    based on the user's start_date.
+    Bank Holiday: full_time users are immediately eligible; part_time users must have
+    worked at least 40 hours in the previous 5 weeks (using clock_entries).
+    """
+    return await _eligibility_for_user(current)
+
+
+@api.get("/users/{user_id}/eligibility")
+async def admin_get_eligibility(user_id: str, _=Depends(require_admin)):
+    user = await db.users.find_one({"id": user_id}, {"password_hash": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return await _eligibility_for_user(user)
+
+
+async def _eligibility_for_user(user: Dict[str, Any]) -> Dict[str, Any]:
+    today_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+    employment_type = user.get("employment_type") or "full_time"
+    start_date_raw = user.get("start_date")
+    weeks_employed: Optional[float] = None
+    sick_pay_eligible = False
+    sick_pay_starts_on: Optional[str] = None
+    if start_date_raw:
+        try:
+            sd = datetime.fromisoformat(start_date_raw).replace(tzinfo=timezone.utc)
+            weeks_employed = round((today_utc - sd).days / 7.0, 1)
+            sick_pay_eligible = weeks_employed >= 13.0
+            if not sick_pay_eligible:
+                sick_pay_starts_on = (sd + timedelta(weeks=13)).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    # Bank holiday eligibility
+    bank_holiday_eligible = False
+    hours_last_5_weeks = 0.0
+    if employment_type == "full_time":
+        bank_holiday_eligible = True
+    else:
+        five_weeks_ago = today_utc - timedelta(weeks=5)
+        entries = await db.clock_entries.find(
+            {"user_id": user["id"], "clock_in": {"$gte": five_weeks_ago}}
+        ).to_list(2000)
+        total_secs = 0
+        for e in entries:
+            total_secs += _entry_seconds(e, cap_to=today_utc)
+        hours_last_5_weeks = round(total_secs / 3600.0, 2)
+        bank_holiday_eligible = hours_last_5_weeks >= 40.0
+    return {
+        "user_id": user["id"],
+        "employment_type": employment_type,
+        "start_date": start_date_raw,
+        "weeks_employed": weeks_employed,
+        "sick_pay_eligible": sick_pay_eligible,
+        "sick_pay_eligible_on": sick_pay_starts_on,
+        "bank_holiday_eligible": bank_holiday_eligible,
+        "hours_last_5_weeks": hours_last_5_weeks,
+        "bank_holiday_threshold_hours": 40.0 if employment_type == "part_time" else 0.0,
+    }
 
 
 # ----------------- Clock In/Out -----------------

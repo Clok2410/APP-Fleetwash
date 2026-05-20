@@ -77,6 +77,16 @@ export default function AdminScreen() {
   const [availability, setAvailability] = useState<any[]>([]);
   const [entUser, setEntUser] = useState<any>(null);
   const [entValue, setEntValue] = useState("25");
+  // Admin-edit-user (Phase 2): full profile editor
+  const [editUser, setEditUser] = useState<any>(null);
+  const [euName, setEuName] = useState("");
+  const [euEmail, setEuEmail] = useState("");
+  const [euPhone, setEuPhone] = useState("");
+  const [euDob, setEuDob] = useState("");
+  const [euPps, setEuPps] = useState("");
+  const [euStart, setEuStart] = useState("");
+  const [euType, setEuType] = useState<"full_time" | "part_time">("full_time");
+  const [euEnt, setEuEnt] = useState("25");
   const [editShift, setEditShift] = useState<any>(null);
   const [eTitle, setETitle] = useState("");
   const [eStart, setEStart] = useState("");
@@ -349,6 +359,43 @@ export default function AdminScreen() {
       setEditEntry(null);
       await load();
       Alert.alert("Saved", "Clock entry updated.");
+    } catch (e: any) {
+      Alert.alert("Failed", e.response?.data?.detail || "Try again");
+    }
+  };
+
+  const openEditUser = (u: any) => {
+    setEditUser(u);
+    setEuName(u.name || "");
+    setEuEmail(u.email || "");
+    setEuPhone(u.phone || "");
+    setEuDob(u.dob || "");
+    setEuPps(u.pps_number || "");
+    setEuStart(u.start_date || "");
+    setEuType((u.employment_type as any) || "full_time");
+    setEuEnt(String(u.holiday_entitlement ?? 25));
+  };
+
+  const saveEditUser = async () => {
+    if (!editUser) return;
+    if (euDob && !/^\d{4}-\d{2}-\d{2}$/.test(euDob)) return Alert.alert("Invalid DOB", "Use YYYY-MM-DD");
+    if (euStart && !/^\d{4}-\d{2}-\d{2}$/.test(euStart)) return Alert.alert("Invalid Start Date", "Use YYYY-MM-DD");
+    const ent = parseInt(euEnt, 10);
+    if (isNaN(ent) || ent < 0 || ent > 365) return Alert.alert("Invalid Entitlement", "0–365 days");
+    try {
+      await api.patch(`/users/${editUser.id}`, {
+        name: euName || undefined,
+        email: euEmail || undefined,
+        phone: euPhone,
+        dob: euDob,
+        pps_number: euPps,
+        start_date: euStart,
+        employment_type: euType,
+        holiday_entitlement: ent,
+      });
+      setEditUser(null);
+      await load();
+      Alert.alert("Saved", "Employee profile updated.");
     } catch (e: any) {
       Alert.alert("Failed", e.response?.data?.detail || "Try again");
     }
@@ -699,23 +746,26 @@ export default function AdminScreen() {
               <Text style={styles.addCtaText}>Add Employee</Text>
             </TouchableOpacity>
             {users.map((u) => (
-              <View key={u.id} style={styles.card}>
+              <View key={u.id} style={styles.card} testID={`user-${u.id}`}>
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontWeight: "700", color: colors.primary }}>{u.name}</Text>
                   <Text style={typography.small}>{u.email} · {u.role}</Text>
                   <Text style={[typography.small, { marginTop: 2 }]}>
-                    Holiday entitlement: {u.holiday_entitlement ?? 25} days
+                    <Feather name="calendar" size={11} color={colors.textMuted} /> Entitlement: {u.holiday_entitlement ?? 25} days
+                    {"  ·  "}
+                    <Feather name="briefcase" size={11} color={colors.textMuted} /> {u.employment_type ? u.employment_type.replace("_", "-") : "type not set"}
                   </Text>
+                  {u.start_date ? (
+                    <Text style={[typography.small, { marginTop: 1, color: colors.textMuted }]}>Started {u.start_date}</Text>
+                  ) : null}
                 </View>
                 <TouchableOpacity
-                  testID={`edit-entitlement-${u.id}`}
-                  style={[styles.smBtn, { backgroundColor: colors.brand }]}
-                  onPress={() => {
-                    setEntUser(u);
-                    setEntValue(String(u.holiday_entitlement ?? 25));
-                  }}
+                  testID={`edit-user-${u.id}`}
+                  style={[styles.smBtn, { backgroundColor: colors.brandSoft, width: 56, borderRadius: 14 }]}
+                  onPress={() => openEditUser(u)}
                 >
-                  <Feather name="calendar" size={14} color="#fff" />
+                  <Feather name="edit-2" size={14} color={colors.brand} />
+                  <Text style={{ color: colors.brand, fontSize: 11, fontWeight: "700", marginLeft: 4 }}>Edit</Text>
                 </TouchableOpacity>
               </View>
             ))}
@@ -1491,6 +1541,80 @@ export default function AdminScreen() {
                 testID="edit-save"
                 style={[styles.modalBtn, { backgroundColor: colors.primary }]}
                 onPress={saveEditEntry}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Admin: edit full employee profile (Phase 2) */}
+      <Modal visible={!!editUser} transparent animationType="slide" onRequestClose={() => setEditUser(null)}>
+        <View style={styles.modalBg}>
+          <View style={[styles.modalCard, { maxHeight: "92%" }]}>
+            <Text style={typography.h3}>Edit Employee</Text>
+            <Text style={[typography.small, { color: colors.textMuted, marginTop: 2, marginBottom: 8 }]}>
+              {editUser?.email}
+            </Text>
+            <ScrollView nestedScrollEnabled style={{ maxHeight: 440 }}>
+              <Text style={typography.label}>Name</Text>
+              <TextInput testID="eu-name" style={styles.input} value={euName} onChangeText={setEuName} />
+              <Text style={[typography.label, { marginTop: 8 }]}>Email</Text>
+              <TextInput
+                testID="eu-email"
+                style={styles.input}
+                value={euEmail}
+                onChangeText={setEuEmail}
+                autoCapitalize="none"
+                keyboardType="email-address"
+              />
+              <Text style={[typography.label, { marginTop: 8 }]}>Phone</Text>
+              <TextInput testID="eu-phone" style={styles.input} value={euPhone} onChangeText={setEuPhone} keyboardType="phone-pad" />
+              <Text style={[typography.label, { marginTop: 8 }]}>Date of Birth (YYYY-MM-DD)</Text>
+              <TextInput testID="eu-dob" style={styles.input} value={euDob} onChangeText={setEuDob} placeholder="YYYY-MM-DD" placeholderTextColor={colors.textMuted} />
+              <Text style={[typography.label, { marginTop: 8 }]}>PPS Number</Text>
+              <TextInput testID="eu-pps" style={styles.input} value={euPps} onChangeText={setEuPps} autoCapitalize="characters" />
+              <Text style={[typography.label, { marginTop: 8 }]}>Start Date (employment)</Text>
+              <TextInput testID="eu-start" style={styles.input} value={euStart} onChangeText={setEuStart} placeholder="YYYY-MM-DD" placeholderTextColor={colors.textMuted} />
+              <Text style={[typography.label, { marginTop: 8 }]}>Employment Type</Text>
+              <View style={{ flexDirection: "row", gap: 8, marginTop: 6 }}>
+                {(["full_time", "part_time"] as const).map((t) => (
+                  <TouchableOpacity
+                    key={t}
+                    testID={`eu-type-${t}`}
+                    onPress={() => setEuType(t)}
+                    style={[styles.typeChip, euType === t && { backgroundColor: colors.primary }]}
+                  >
+                    <Text style={{ color: euType === t ? "#fff" : colors.primary, fontWeight: "600", fontSize: 13 }}>
+                      {t.replace("_", "-")}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={[typography.label, { marginTop: 8 }]}>Holiday Entitlement (days/year)</Text>
+              <TextInput
+                testID="eu-ent"
+                style={styles.input}
+                value={euEnt}
+                onChangeText={setEuEnt}
+                keyboardType="number-pad"
+              />
+              <Text style={[typography.small, { color: colors.textMuted, marginTop: 4, fontSize: 11 }]}>
+                Sick-pay eligibility requires 13 continuous weeks from Start Date. Bank holiday is automatic for full-time; part-time needs 40 hrs in last 5 weeks.
+              </Text>
+            </ScrollView>
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: colors.surface }]}
+                onPress={() => setEditUser(null)}
+              >
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="eu-save"
+                style={[styles.modalBtn, { backgroundColor: colors.primary }]}
+                onPress={saveEditUser}
               >
                 <Text style={{ color: "#fff", fontWeight: "700" }}>Save</Text>
               </TouchableOpacity>
