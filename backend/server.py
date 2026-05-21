@@ -3045,6 +3045,35 @@ async def on_startup():
     await db.notifications.create_index([("user_id", 1), ("read", 1), ("created_at", -1)])
     await db.depots.create_index("id", unique=True)
 
+    # Seed first admin from env vars on empty DB (production bootstrap).
+    # In Emergent deployment, set SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD / SEED_ADMIN_NAME
+    # in the deployment env-vars panel. Locally these come from backend/.env.
+    try:
+        seed_email = (os.environ.get("SEED_ADMIN_EMAIL") or "").strip().lower()
+        seed_pwd = os.environ.get("SEED_ADMIN_PASSWORD") or ""
+        seed_name = (os.environ.get("SEED_ADMIN_NAME") or "").strip() or "Admin"
+        if seed_email and seed_pwd:
+            existing = await db.users.find_one({"email": seed_email})
+            if not existing:
+                # Only seed if no admin exists at all (clean DB)
+                any_admin = await db.users.find_one({"role": "admin"})
+                if not any_admin:
+                    await db.users.insert_one({
+                        "id": str(uuid.uuid4()),
+                        "email": seed_email,
+                        "name": seed_name,
+                        "role": "admin",
+                        "password_hash": hash_password(seed_pwd),
+                        "active": True,
+                        "created_at": now_utc(),
+                        "holiday_entitlement": 25,
+                        "employment_type": "full_time",
+                        "seeded": True,
+                    })
+                    logger.info(f"Seeded first admin user: {seed_email}")
+    except Exception:
+        logger.exception("Seed admin failed (non-fatal)")
+
     # Schedule weekly digest (Mon 09:00 UTC)
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
