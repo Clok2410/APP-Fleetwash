@@ -801,244 +801,7 @@ async def _seed_ireland_bank_holidays():
         await db.bank_holidays.insert_many(to_insert)
 
 
-@api.get("/bank-holidays")
-async def list_bank_holidays(year: Optional[int] = None, _=Depends(get_current_user)):
-    await _seed_ireland_bank_holidays()
-    q: Dict[str, Any] = {}
-    if year:
-        q["date"] = {"$gte": f"{year}-01-01", "$lt": f"{year+1}-01-01"}
-    docs = await db.bank_holidays.find(q).sort("date", 1).to_list(500)
-    return [serialize(d) for d in docs]
-
-
-@api.post("/bank-holidays")
-async def add_bank_holiday(body: BankHolidayIn, _=Depends(require_admin)):
-    # Validate date
-    try:
-        datetime.fromisoformat(body.date)
-    except Exception:
-        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
-    existing = await db.bank_holidays.find_one({"date": body.date})
-    if existing:
-        raise HTTPException(status_code=400, detail="Bank holiday already exists on that date")
-    doc = {
-        "id": str(uuid.uuid4()),
-        "date": body.date,
-        "name": body.name,
-        "hours": float(body.hours or 8.0),
-        "country": "IE",
-        "custom": True,
-        "created_at": now_utc(),
-    }
-    await db.bank_holidays.insert_one(doc)
-    return serialize(doc)
-
-
-@api.delete("/bank-holidays/{bid}")
-async def delete_bank_holiday(bid: str, _=Depends(require_admin)):
-    res = await db.bank_holidays.delete_one({"id": bid})
-    if res.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Bank holiday not found")
-    return {"ok": True}
-
-
-# ----------------- Holidays -----------------
-@api.get("/holidays/balance")
-async def holiday_balance(current=Depends(get_current_user)):
-    user = await db.users.find_one({"id": current["id"]})
-    entitlement = user.get("holiday_entitlement", 25)
-    used_cursor = db.holiday_requests.find({"user_id": current["id"], "status": "approved"})
-    used_days = 0
-    async for r in used_cursor:
-        s = datetime.fromisoformat(r["start_date"]).date()
-        e = datetime.fromisoformat(r["end_date"]).date()
-        used_days += (e - s).days + 1
-    pending_cursor = db.holiday_requests.find({"user_id": current["id"], "status": "pending"})
-    pending_days = 0
-    async for r in pending_cursor:
-        s = datetime.fromisoformat(r["start_date"]).date()
-        e = datetime.fromisoformat(r["end_date"]).date()
-        pending_days += (e - s).days + 1
-    # Accrued holiday HOURS from clock entries YTD (1h per 3h net worked).
-    # Note: this is informational; the day-based balance above is the official figure.
-    year = datetime.utcnow().year
-    start_y = datetime(year, 1, 1, tzinfo=timezone.utc)
-    end_y = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
-    entries = await db.clock_entries.find(
-        {"user_id": current["id"], "clock_in": {"$gte": start_y, "$lt": end_y}}
-    ).to_list(5000)
-    total_secs = 0
-    for e in entries:
-        total_secs += _entry_seconds(e, cap_to=end_y)
-    accr = _accrual_hours(total_secs)
-    # Bank holiday count for the year (informational)
-    bh_count = await db.bank_holidays.count_documents(
-        {"date": {"$gte": f"{year}-01-01", "$lt": f"{year+1}-01-01"}}
-    )
-    remaining = entitlement - used_days - pending_days
-    return {
-        "entitlement": entitlement,
-        "used": used_days,
-        "pending": pending_days,
-        "remaining": remaining,
-        "in_deficit": remaining < 0,
-        "accrued_holiday_hours": accr["accrued_holiday_hours"],
-        "net_hours_ytd": accr["net_hours"],
-        "bank_holiday_count": bh_count,
-        "bank_holiday_hours_value": bh_count * 8,
-    }
-
-
-@api.post("/holidays/requests")
-async def create_holiday_request(body: HolidayRequestIn, current=Depends(get_current_user)):
-    # Compute requested days (informational); allow request even if balance is 0/negative.
-    try:
-        s = datetime.fromisoformat(body.start_date).date()
-        e = datetime.fromisoformat(body.end_date).date()
-        days = (e - s).days + 1
-    except Exception:
-        days = 0
-    req = {
-        "id": str(uuid.uuid4()),
-        "user_id": current["id"],
-        "user_name": current["name"],
-        "start_date": body.start_date,
-        "end_date": body.end_date,
-        "reason": body.reason,
-        "type": body.type,
-        "days": days,
-        "status": "pending",
-        "created_at": now_utc(),
-    }
-    await db.holiday_requests.insert_one(req)
-    return serialize(req)
-
-
-@api.get("/holidays/requests")
-async def list_holiday_requests(current=Depends(get_current_user), all: bool = False):
-    if all and current.get("role") == "admin":
-        docs = await db.holiday_requests.find().sort("created_at", -1).to_list(500)
-    else:
-        docs = await db.holiday_requests.find({"user_id": current["id"]}).sort("created_at", -1).to_list(500)
-    return [serialize(d) for d in docs]
-
-
-class HolidayEditIn(BaseModel):
-    start_date: Optional[str] = None  # YYYY-MM-DD
-    end_date: Optional[str] = None
-    reason: Optional[str] = None
-    type: Optional[str] = None  # 'annual'|'sick'|'unpaid'
-
-
-@api.patch("/holidays/requests/{rid}")
-async def edit_holiday_request(rid: str, body: HolidayEditIn, current=Depends(get_current_user)):
-    """Edit the dates/reason/type of a holiday request. Staff can edit ONLY their own
-    pending requests. Admin can edit any request in any state. Re-computes `days`."""
-    h = await db.holiday_requests.find_one({"id": rid})
-    if not h:
-        raise HTTPException(status_code=404, detail="Request not found")
-    is_admin = current.get("role") == "admin"
-    if not is_admin:
-        if h.get("user_id") != current["id"]:
-            raise HTTPException(status_code=403, detail="Cannot edit another staff member's request")
-        if h.get("status") != "pending":
-            raise HTTPException(status_code=400, detail="Only pending requests can be edited by staff")
-    updates: Dict[str, Any] = {}
-    if body.start_date is not None:
-        _validate_iso_date(body.start_date, "start_date")
-        updates["start_date"] = body.start_date
-    if body.end_date is not None:
-        _validate_iso_date(body.end_date, "end_date")
-        updates["end_date"] = body.end_date
-    if body.reason is not None:
-        updates["reason"] = body.reason
-    if body.type is not None:
-        if body.type not in ("annual", "sick", "unpaid"):
-            raise HTTPException(status_code=400, detail="type must be 'annual'|'sick'|'unpaid'")
-        updates["type"] = body.type
-    if updates:
-        # Recompute days if dates touched
-        s_raw = updates.get("start_date", h.get("start_date"))
-        e_raw = updates.get("end_date", h.get("end_date"))
-        try:
-            s = datetime.fromisoformat(s_raw).date()
-            e = datetime.fromisoformat(e_raw).date()
-            if e < s:
-                raise HTTPException(status_code=400, detail="end_date cannot be before start_date")
-            updates["days"] = (e - s).days + 1
-        except HTTPException:
-            raise
-        except Exception:
-            pass
-        updates["edited_at"] = now_utc()
-        updates["edited_by"] = "admin" if is_admin else "self"
-        updates["edited_by_name"] = current.get("name")
-        await db.holiday_requests.update_one({"id": rid}, {"$set": updates})
-    doc = await db.holiday_requests.find_one({"id": rid})
-    return serialize(doc)
-
-
-@api.post("/holidays/requests/{rid}/decision")
-async def decide_holiday(rid: str, decision: str, _=Depends(require_admin)):
-    if decision not in ("approved", "rejected"):
-        raise HTTPException(status_code=400, detail="Invalid decision")
-    res = await db.holiday_requests.update_one({"id": rid}, {"$set": {"status": decision, "decided_at": now_utc()}})
-    if res.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Request not found")
-    h = await db.holiday_requests.find_one({"id": rid})
-    if h:
-        try:
-            await notify(
-                h["user_id"],
-                f"Holiday {decision}",
-                f"{h.get('start_date','')} → {h.get('end_date','')}",
-                "holiday",
-                rid,
-            )
-        except Exception:
-            pass
-    return {"ok": True}
-
-
-@api.post("/holidays/requests/{rid}/cancel")
-async def cancel_holiday(rid: str, current=Depends(get_current_user)):
-    """Cancel a holiday request. Staff can cancel their own requests in any state
-    (pending/approved). Admin can cancel anyone's request. A cancelled request
-    refunds days back to the balance automatically (because cancelled is not
-    counted as used or pending)."""
-    h = await db.holiday_requests.find_one({"id": rid})
-    if not h:
-        raise HTTPException(status_code=404, detail="Request not found")
-    if current.get("role") != "admin" and h.get("user_id") != current["id"]:
-        raise HTTPException(status_code=403, detail="Cannot cancel another staff member's request")
-    if h.get("status") == "cancelled":
-        raise HTTPException(status_code=400, detail="Request already cancelled")
-    if h.get("status") == "rejected":
-        raise HTTPException(status_code=400, detail="Cannot cancel a rejected request")
-    cancelled_by = "admin" if current.get("role") == "admin" else "self"
-    await db.holiday_requests.update_one(
-        {"id": rid},
-        {"$set": {
-            "status": "cancelled",
-            "cancelled_at": now_utc(),
-            "cancelled_by": cancelled_by,
-            "cancelled_by_name": current.get("name"),
-        }},
-    )
-    # Notify the request owner if cancelled by admin
-    if cancelled_by == "admin" and h.get("user_id") != current["id"]:
-        try:
-            await notify(
-                h["user_id"],
-                "Holiday cancelled",
-                f"{h.get('start_date','')} → {h.get('end_date','')} cancelled by admin",
-                "holiday",
-                rid,
-            )
-        except Exception:
-            pass
-    doc = await db.holiday_requests.find_one({"id": rid})
-    return serialize(doc)
+# ----------------- Holidays + Bank Holidays moved to routers/holidays.py -----------------
 
 
 # ----------------- Shifts / Scheduler -----------------
@@ -3320,9 +3083,62 @@ async def on_startup():
                 logger.exception("Scheduled digest failed")
 
         scheduler.add_job(weekly_digest_job, CronTrigger(day_of_week="mon", hour=9, minute=0))
+
+        # A3: HR — sweep expiry every day at 06:00 UTC + notify staff 30/7/0 days before expiry
+        async def hr_expiry_job():
+            try:
+                from datetime import date as _date, timedelta as _td
+                today = _date.today()
+                # 1) Mark anything strictly past as expired
+                cursor = db.hr_issuances.find({
+                    "status": {"$in": ["pending", "read"]},
+                    "expires_at": {"$ne": None, "$lt": today.isoformat()},
+                })
+                n_expired = 0
+                async for d in cursor:
+                    await db.hr_issuances.update_one(
+                        {"id": d["id"]},
+                        {
+                            "$set": {"status": "expired"},
+                            "$push": {"audit": {"kind": "expired", "at": now_utc(), "actor_id": None, "actor_name": "system", "ip": "", "user_agent": ""}},
+                        },
+                    )
+                    n_expired += 1
+                # 2) Reminder notifications at 30/7/0 day windows
+                for days_left in (30, 7, 0):
+                    target = (today + _td(days=days_left)).isoformat()
+                    rem_cursor = db.hr_issuances.find({
+                        "status": {"$in": ["pending", "read"]},
+                        "expires_at": target,
+                    })
+                    async for d in rem_cursor:
+                        # De-dupe via a marker on audit; skip if already notified for this window
+                        marker = f"reminder_{days_left}d"
+                        already = any((e.get("kind") == marker) for e in (d.get("audit") or []))
+                        if already:
+                            continue
+                        user = await db.users.find_one({"id": d.get("user_id")})
+                        tok = (user or {}).get("expo_push_token")
+                        if tok:
+                            try:
+                                title = "HR document expiring" if days_left > 0 else "HR document expires today"
+                                body = f"{d.get('template_title', 'Document')} expires {('today' if days_left == 0 else f'in {days_left} day' + ('s' if days_left != 1 else ''))}"
+                                await _send_expo_push([tok], title, body, data={"kind": "hr_expiry_reminder", "issuance_id": d["id"]})
+                            except Exception:
+                                pass
+                        await db.hr_issuances.update_one(
+                            {"id": d["id"]},
+                            {"$push": {"audit": {"kind": marker, "at": now_utc(), "actor_id": None, "actor_name": "system", "ip": "", "user_agent": ""}}},
+                        )
+                if n_expired:
+                    logger.info(f"HR expiry sweep: {n_expired} marked expired")
+            except Exception:
+                logger.exception("HR expiry job failed")
+
+        scheduler.add_job(hr_expiry_job, CronTrigger(hour=6, minute=0))
         scheduler.start()
         app.state.scheduler = scheduler
-        logger.info("Scheduler started: weekly digest (Mon 09:00 UTC)")
+        logger.info("Scheduler started: weekly digest (Mon 09:00 UTC) + HR expiry sweep (daily 06:00 UTC)")
     except Exception:
         logger.exception("Could not start scheduler")
 
@@ -3376,8 +3192,10 @@ async def root():
 # ----------------- Mount modular routers (extracted from this file) -----------------
 from routers import customers as _customers_router  # noqa: E402
 from routers import hr as _hr_router  # noqa: E402
+from routers import holidays as _holidays_router  # noqa: E402
 api.include_router(_customers_router.router)
 api.include_router(_hr_router.router)
+api.include_router(_holidays_router.router)
 
 
 app.include_router(api)

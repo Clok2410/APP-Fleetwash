@@ -181,8 +181,19 @@ async def hr_issue(body: HRIssueIn, request: Request, current=Depends(require_ad
         ],
     }
     await db.hr_issuances.insert_one(doc)
-    # Note: push notification can be wired by the caller via /admin/scan-alerts cron
-    # or by integrating with the notification helper later. Keep this endpoint focused.
+    # Best-effort push notification to the assigned staff member.
+    try:
+        tok = user.get("expo_push_token")
+        if tok:
+            from server import _send_expo_push  # lazy import to avoid circular at load time
+            await _send_expo_push(
+                [tok],
+                "HR document to sign",
+                f"{current.get('name') or 'Admin'} sent you: {tpl.get('title') or 'a document'}",
+                data={"kind": "hr_issued", "issuance_id": iid},
+            )
+    except Exception:
+        pass
     return serialize(doc)
 
 
