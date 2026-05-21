@@ -21,6 +21,7 @@ import FormBuilderModal from "../src/components/FormBuilderModal";
 import StatsModal from "../src/components/StatsModal";
 import OffsiteMap from "../src/components/OffsiteMap";
 import CustomerModal from "../src/components/CustomerModal";
+import HRProfileModal from "../src/components/HRProfileModal";
 import WebDropZone from "../src/components/WebDropZone";
 import { readAssetAsBase64 } from "../src/utils/fileToBase64";
 import { Calendar } from "react-native-calendars";
@@ -28,7 +29,7 @@ import { Calendar } from "react-native-calendars";
 export default function AdminScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "pdf-forms" | "users" | "depots" | "offsite" | "customers">("holidays");
+  const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "pdf-forms" | "users" | "depots" | "offsite" | "customers" | "hr">("holidays");
   const [holidays, setHolidays] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [allShifts, setAllShifts] = useState<any[]>([]);
@@ -78,6 +79,9 @@ export default function AdminScreen() {
   const [offsite, setOffsite] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
+  // A3: HR profile
+  const [hrStaff, setHrStaff] = useState<any[]>([]);
+  const [hrActiveUserId, setHrActiveUserId] = useState<string | null>(null);
   const [newCustomerModal, setNewCustomerModal] = useState(false);
   const [ncName, setNcName] = useState("");
   const [ncCompany, setNcCompany] = useState("");
@@ -229,6 +233,19 @@ export default function AdminScreen() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, formsView, fxTemplate, fxUser, fxFrom, fxTo, fxReviewed, fxKind]);
+
+  // A3: Load HR staff directory when entering HR tab
+  const loadHrStaff = useCallback(async () => {
+    try {
+      const { data } = await api.get("/hr/staff");
+      setHrStaff(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setHrStaff([]);
+    }
+  }, []);
+  useEffect(() => {
+    if (tab === "hr") loadHrStaff();
+  }, [tab, loadHrStaff]);
 
   const decideHoliday = async (id: string, decision: string) => {
     await api.post(`/holidays/requests/${id}/decision`, null, { params: { decision } });
@@ -841,6 +858,7 @@ export default function AdminScreen() {
     depots: "map-pin",
     offsite: "alert-circle",
     customers: "briefcase",
+    hr: "shield",
   };
   const tabLabels: Record<string, string> = {
     holidays: "Holidays",
@@ -851,6 +869,7 @@ export default function AdminScreen() {
     depots: "Depots",
     offsite: `Off-site${offsite.length ? ` · ${offsite.length}` : ""}`,
     customers: "Customers",
+    hr: "HR",
   };
 
   // Compute dashboard metrics for the current view (holidays = pending count etc.)
@@ -927,7 +946,7 @@ export default function AdminScreen() {
               </TouchableOpacity>
             ))}
             {!sidebarCollapsed && <Text style={styles.sidebarSection}>ORGANISATION</Text>}
-            {(["users", "depots", "customers"] as const).map((t) => (
+            {(["users", "hr", "depots", "customers"] as const).map((t) => (
               <TouchableOpacity
                 key={t}
                 testID={`admin-tab-${t}`}
@@ -1022,7 +1041,7 @@ export default function AdminScreen() {
           </View>
 
           <View style={styles.tabs}>
-            {(["holidays", "shifts", "forms", "pdf-forms", "users", "depots", "offsite", "customers"] as const).map((t) => (
+            {(["holidays", "shifts", "forms", "pdf-forms", "users", "hr", "depots", "offsite", "customers"] as const).map((t) => (
               <TouchableOpacity
                 key={t}
                 testID={`admin-tab-${t}`}
@@ -1971,6 +1990,72 @@ export default function AdminScreen() {
           </>
         )}
 
+        {tab === "hr" && (
+          <>
+            <Text style={[typography.label, { marginBottom: 4 }]}>HR — DocuSign replacement</Text>
+            <Text style={[typography.small, { marginBottom: 8 }]}>
+              Click a staff member to view their HR profile (personal details, holiday balance, assigned documents).
+              Issue PDF documents that require read + signature; audit trail captures who signed, when, IP, and device.
+            </Text>
+            {(() => {
+              const sorted = [...hrStaff].sort((a: any, b: any) =>
+                (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" })
+              );
+              const groups: Record<string, any[]> = {};
+              sorted.forEach((u: any) => {
+                const letter = (u.name || "?").trim().charAt(0).toUpperCase() || "#";
+                const key = /[A-Z]/.test(letter) ? letter : "#";
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(u);
+              });
+              const letters = Object.keys(groups).sort();
+              if (letters.length === 0) {
+                return (
+                  <Text style={[typography.small, { textAlign: "center", marginTop: 24, color: colors.textMuted }]}>
+                    No staff yet.
+                  </Text>
+                );
+              }
+              return letters.map((L) => (
+                <View key={L}>
+                  <Text style={styles.azSectionHeader} testID={`hr-section-${L}`}>{L}</Text>
+                  {groups[L].map((u: any) => {
+                    const pendSig = u.hr_pending_signature || 0;
+                    return (
+                      <TouchableOpacity
+                        key={u.id}
+                        testID={`hr-user-${u.id}`}
+                        style={styles.card}
+                        onPress={() => setHrActiveUserId(u.id)}
+                      >
+                        <View style={[styles.smBtn, { backgroundColor: colors.brandSoft, width: 36, height: 36, borderRadius: 18 }]}>
+                          <Feather name="user" size={16} color={colors.brand} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontWeight: "700", color: colors.primary }}>{u.name}</Text>
+                          <Text style={typography.small}>
+                            {u.email} · {u.hr_total || 0} doc{(u.hr_total || 0) === 1 ? "" : "s"}
+                          </Text>
+                        </View>
+                        {pendSig > 0 ? (
+                          <View style={{ backgroundColor: colors.alert, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, marginRight: 8 }}>
+                            <Text style={{ color: "#fff", fontSize: 10, fontWeight: "800" }}>{pendSig} PENDING</Text>
+                          </View>
+                        ) : (u.hr_counts?.signed || 0) > 0 ? (
+                          <View style={{ backgroundColor: "#0F766E", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, marginRight: 8 }}>
+                            <Text style={{ color: "#fff", fontSize: 10, fontWeight: "800" }}>{u.hr_counts?.signed} SIGNED</Text>
+                          </View>
+                        ) : null}
+                        <Feather name="chevron-right" size={16} color={colors.textMuted} />
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ));
+            })()}
+          </>
+        )}
+
       {/* Shift Modal */}
       <Modal visible={shiftModal} animationType="slide" transparent onRequestClose={() => setShiftModal(false)}>
         <View style={styles.modalBg}>
@@ -2132,6 +2217,14 @@ export default function AdminScreen() {
       <FormBuilderModal visible={formModal} onClose={() => setFormModal(false)} onPublished={load} depots={depots} />
       <StatsModal template={statsTpl} onClose={() => setStatsTpl(null)} />
       <CustomerModal customerId={activeCustomerId} onClose={() => { setActiveCustomerId(null); load(); }} />
+
+      {/* A3: HR Profile drawer */}
+      <HRProfileModal
+        visible={!!hrActiveUserId}
+        userId={hrActiveUserId}
+        onClose={() => { setHrActiveUserId(null); loadHrStaff(); }}
+        onReload={loadHrStaff}
+      />
 
       {/* New Customer Modal */}
       <Modal visible={newCustomerModal} animationType="slide" transparent onRequestClose={() => setNewCustomerModal(false)}>

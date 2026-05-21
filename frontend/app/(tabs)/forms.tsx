@@ -19,18 +19,21 @@ import { api } from "../../src/api";
 import { useAuth } from "../../src/auth";
 import { colors, spacing, radius, typography } from "../../src/theme";
 import PdfFormFillModal from "../../src/components/PdfFormFillModal";
+import HRSignModal from "../../src/components/HRSignModal";
 
 type Field = { key: string; label: string; type: string; required?: boolean; options?: string[] };
 
 export default function FormsScreen() {
   const { user } = useAuth();
-  const [tab, setTab] = useState<"templates" | "submissions">("templates");
+  const [tab, setTab] = useState<"templates" | "submissions" | "hr">("templates");
   const [templates, setTemplates] = useState<any[]>([]);
   const [pdfTemplates, setPdfTemplates] = useState<any[]>([]);
   const [pdfSessions, setPdfSessions] = useState<any[]>([]);
   const [activePdfId, setActivePdfId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [submissions, setSubmissions] = useState<any[]>([]);
+  const [hrIssuances, setHrIssuances] = useState<any[]>([]);
+  const [activeHRSignId, setActiveHRSignId] = useState<string | null>(null);
   const [active, setActive] = useState<any>(null); // template being filled
   const [values, setValues] = useState<Record<string, any>>({});
   const [refreshing, setRefreshing] = useState(false);
@@ -41,12 +44,13 @@ export default function FormsScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [t, s, p, ps, sess] = await Promise.all([
+      const [t, s, p, ps, sess, hr] = await Promise.all([
         api.get("/forms/templates"),
         api.get("/forms/submissions"),
         api.get("/pdf-forms/templates").catch(() => ({ data: [] })),
         api.get("/pdf-forms/submissions").catch(() => ({ data: [] })),
         api.get("/pdf-forms/sessions").catch(() => ({ data: [] })),
+        api.get("/hr/issuances").catch(() => ({ data: [] })),
       ]);
       setTemplates(t.data);
       setSubmissions([
@@ -55,6 +59,7 @@ export default function FormsScreen() {
       ].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)));
       setPdfTemplates(p.data || []);
       setPdfSessions(sess.data || []);
+      setHrIssuances(Array.isArray(hr.data) ? hr.data : []);
     } catch {}
   }, []);
 
@@ -185,6 +190,18 @@ export default function FormsScreen() {
             My Submissions · {submissions.length}
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          testID="tab-hr"
+          onPress={() => setTab("hr")}
+          style={[styles.tab, tab === "hr" && styles.tabActive]}
+        >
+          <Text style={[styles.tabText, tab === "hr" && styles.tabTextActive]}>
+            HR{(() => {
+              const pend = hrIssuances.filter((i: any) => i.status === "pending" || i.status === "read").length;
+              return pend > 0 ? ` · ${pend} pending` : "";
+            })()}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView
@@ -304,7 +321,77 @@ export default function FormsScreen() {
               </View>
             ))
           ))}
+
+        {/* A3: HR tab - documents to read & sign */}
+        {tab === "hr" && (
+          hrIssuances.length === 0 ? (
+            <View style={styles.empty}>
+              <Feather name="shield" size={28} color={colors.textMuted} />
+              <Text style={[typography.body, { textAlign: "center", marginTop: 10 }]}>
+                No HR documents yet. Your admin will issue contracts, handbooks, and policies here.
+              </Text>
+            </View>
+          ) : (
+            hrIssuances.map((i: any) => {
+              const isPending = i.status === "pending" || i.status === "read";
+              const isSigned = i.status === "signed";
+              const isExpired = i.status === "expired" || i.status === "cancelled";
+              return (
+                <TouchableOpacity
+                  key={i.id}
+                  testID={`hr-issuance-${i.id}`}
+                  style={[styles.card, isPending && { borderLeftWidth: 3, borderLeftColor: colors.brand }]}
+                  onPress={() => setActiveHRSignId(i.id)}
+                >
+                  <View style={[styles.iconWrap, { backgroundColor: isSigned ? "#D1FAE5" : isExpired ? "#FEE2E2" : colors.brandSoft }]}>
+                    <Feather
+                      name={isSigned ? "check-circle" : isExpired ? "x-circle" : "shield"}
+                      size={18}
+                      color={isSigned ? "#0F766E" : isExpired ? colors.alert : colors.brand}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle}>{i.template_title}</Text>
+                    <Text style={typography.small}>
+                      Issued by {i.issued_by_name} · {new Date(i.issued_at).toLocaleDateString()}
+                    </Text>
+                    {i.expires_at ? (
+                      <Text style={[typography.small, { color: colors.textMuted, marginTop: 2 }]}>
+                        <Feather name="clock" size={11} color={colors.textMuted} /> Expires {i.expires_at}
+                      </Text>
+                    ) : null}
+                    {isSigned && i.signed_at ? (
+                      <Text style={[typography.small, { color: "#0F766E", marginTop: 2, fontWeight: "600" }]}>
+                        <Feather name="check" size={11} color="#0F766E" /> Signed {new Date(i.signed_at).toLocaleDateString()}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <View
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 4,
+                      borderRadius: 999,
+                      backgroundColor: isSigned ? "#0F766E" : isExpired ? colors.alert : colors.brand,
+                    }}
+                  >
+                    <Text style={{ color: "#fff", fontWeight: "800", fontSize: 10 }}>
+                      {isPending ? "SIGN NOW" : i.status?.toUpperCase()}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })
+          )
+        )}
       </ScrollView>
+
+      {/* A3: HR sign modal */}
+      <HRSignModal
+        visible={!!activeHRSignId}
+        issuanceId={activeHRSignId}
+        onClose={() => setActiveHRSignId(null)}
+        onSigned={() => { setActiveHRSignId(null); load(); }}
+      />
 
       {/* Fill form modal */}
       <Modal visible={!!active} animationType="slide" onRequestClose={() => setActive(null)}>

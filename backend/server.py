@@ -3375,7 +3375,9 @@ async def root():
 
 # ----------------- Mount modular routers (extracted from this file) -----------------
 from routers import customers as _customers_router  # noqa: E402
+from routers import hr as _hr_router  # noqa: E402
 api.include_router(_customers_router.router)
+api.include_router(_hr_router.router)
 
 
 app.include_router(api)
