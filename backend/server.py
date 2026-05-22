@@ -3171,41 +3171,44 @@ async def on_startup():
     except Exception:
         logger.exception("Could not start scheduler")
 
-    # Seed admin
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@company.com")
-    admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@123")
-    existing = await db.users.find_one({"email": admin_email})
-    if not existing:
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()),
-            "email": admin_email,
-            "name": "Admin",
-            "role": "admin",
-            "password_hash": hash_password(admin_password),
-            "holiday_entitlement": 25,
-            "active": True,
-            "created_at": now_utc(),
-        })
-        logger.info("Seeded admin user")
-    elif not verify_password(admin_password, existing["password_hash"]):
-        await db.users.update_one(
-            {"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}}
-        )
+    # Seed admin — LEGACY DEMO PATH. Only runs when SEED_DEMO_USERS=1 is set
+    # (off by default to avoid polluting production DBs). The non-destructive
+    # SEED_ADMIN_* path above (line ~3052) is the production-bootstrap path.
+    if (os.environ.get("SEED_DEMO_USERS") or "").strip() == "1":
+        admin_email = os.environ.get("ADMIN_EMAIL", "admin@company.com")
+        admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@123")
+        existing = await db.users.find_one({"email": admin_email})
+        if not existing:
+            await db.users.insert_one({
+                "id": str(uuid.uuid4()),
+                "email": admin_email,
+                "name": "Admin",
+                "role": "admin",
+                "password_hash": hash_password(admin_password),
+                "holiday_entitlement": 25,
+                "active": True,
+                "created_at": now_utc(),
+            })
+            logger.info("Seeded admin user (demo)")
+        elif not verify_password(admin_password, existing["password_hash"]):
+            await db.users.update_one(
+                {"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}}
+            )
 
-    # Seed sample staff
-    sample_email = "jane@company.com"
-    if not await db.users.find_one({"email": sample_email}):
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()),
-            "email": sample_email,
-            "name": "Jane Doe",
-            "role": "staff",
-            "password_hash": hash_password("Staff@123"),
-            "holiday_entitlement": 25,
-            "active": True,
-            "created_at": now_utc(),
-        })
-        logger.info("Seeded sample staff user")
+        # Seed sample staff
+        sample_email = "jane@company.com"
+        if not await db.users.find_one({"email": sample_email}):
+            await db.users.insert_one({
+                "id": str(uuid.uuid4()),
+                "email": sample_email,
+                "name": "Jane Doe",
+                "role": "staff",
+                "password_hash": hash_password("Staff@123"),
+                "holiday_entitlement": 25,
+                "active": True,
+                "created_at": now_utc(),
+            })
+            logger.info("Seeded sample staff user (demo)")
 
 
 @app.on_event("shutdown")
