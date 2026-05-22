@@ -1,87 +1,76 @@
-# StaffHub / FleetWash — Migration PRD
+# StaffHub / FleetWash — Migration & Production-Prep PRD
 
 ## Original problem statement
 Migrate the existing Expo + FastAPI + MongoDB **StaffHub / FleetWash** app from
-GitHub (`https://github.com/Clok2410/APP-Fleetwash`) into this Emergent pod:
-1. Clone repo
-2. Verify FastAPI backend boots and connects to MongoDB
-3. Verify Expo frontend builds for web (`app.json` already has `web.output: "static"`)
-4. Serve Expo web as the public preview URL
-5. Use production env vars when deploying (vars NOT yet supplied by user)
+GitHub (`https://github.com/Clok2410/APP-Fleetwash`) into this Emergent pod, verify
+backend + Mongo, serve Expo web at the public URL, keep cross-platform (web + iOS + Android),
+and **never wipe the production MongoDB data**.
 
-Constraints: app must stay cross-platform (web + iOS + Android); **do NOT wipe the
-production Mongo database**.
+## Done in session 1 (Migration) — 2026-05-22
+- Cloned repo into `/app`; preserved pod's `.git` and `.emergent` files
+- Wired safe **local-dev** env files (mongo://localhost, isolated DB, generated JWT_SECRET, Emergent LLM key)
+- Backend running (FastAPI 0.110, 123 routes, APScheduler started)
+- Auto-seeded `admin@company.com / Admin@123` + `jane@company.com / Staff@123`
+- Frontend running via `expo start --web --port 3000`
+- End-to-end login through public URL verified (JWT + /me + /users 200)
 
-## Migration completed (this session — 2026-05-22)
-- Cloned `Clok2410/APP-Fleetwash` → moved into `/app` (preserving pod `.git`/`.emergent`)
-- Created safe **local-dev** envs:
-  - `backend/.env`: `MONGO_URL=mongodb://localhost:27017`, `DB_NAME=staffhub`,
-    auto-generated `JWT_SECRET`, `EMERGENT_LLM_KEY`, `CORS_ORIGINS="*"`
-  - `frontend/.env`: `EXPO_PUBLIC_BACKEND_URL` + `REACT_APP_BACKEND_URL` both pointing
-    at the preview URL (`api.ts` reads `EXPO_PUBLIC_BACKEND_URL`)
-- Installed backend deps from `requirements.txt` (FastAPI, Motor, bcrypt, PyJWT,
-  ReportLab, APScheduler, Resend, pypdf, emergentintegrations, etc.)
-- Ran `yarn install` in `/app/frontend` → Expo SDK 54 + Expo Router + react-native-web
-- Changed `frontend/package.json` `start` script from `expo start` to
-  `expo start --web --port 3000 --host lan` so the pod supervisor's `yarn start`
-  contract launches Metro web bundler on port 3000.
-- `sudo supervisorctl restart backend frontend` → both services RUNNING
-- APScheduler started (weekly digest Mon 09:00 UTC + HR expiry sweep daily 06:00 UTC)
-- Auto-seeded demo accounts (idempotent — won't overwrite existing prod users):
-  - `admin@company.com / Admin@123` (admin)
-  - `jane@company.com / Staff@123` (staff)
+## Done in session 2 (Production prep) — 2026-05-22
+1. **Static web export** — `expo export -p web` builds the entire app into `/app/frontend/dist`
+   (14 routes, ~2.2 MB main bundle). Replaces dev server with optimized static output.
+2. **Static server on port 3000** — `package.json start` now runs `serve dist --single --listen tcp://0.0.0.0:3000`.
+   The original Metro dev command is preserved as `start:dev` for future hot-reload sessions.
+   Same Emergent ingress contract (`/api/*` → :8001, everything else → :3000), much faster cold start, optimized bundles.
+3. **EAS Build configs** — `/app/frontend/eas.json` with `development`, `preview`, `production`
+   profiles for iOS + Android. `app.json` updated with `bundleIdentifier=com.fleetwash.staffhub`,
+   `package=com.fleetwash.staffhub`, location/camera Info.plist strings, and proper Android permissions.
+   To use: run `eas login` + `eas build:configure` (will fill in `extra.eas.projectId`).
+4. **AI roster import banner** — admin-only banner at the top of the Schedule tab. Tap → deep-links
+   to `/admin?openRoster=1`, which auto-switches to Shifts tab and opens the Roster PDF upload modal.
+   Implementation: `useLocalSearchParams` in `admin.tsx`, new banner UI in `schedule.tsx`.
+   Verified via screenshot: banner renders with Claude Sonnet 4.5 tagline.
 
-## Verification done
-- `GET /api/auth/me` without token → 401 (auth gate active)
-- `POST /api/auth/login` admin via **public URL** → 200, JWT returned
-- `GET /api/auth/me` with token → admin user payload
-- `GET /api/users` → 2 seeded users listed
-- Public URL renders Expo-Router StaffHub login page (screenshot verified)
+## Currently MOCKED
+- **Resend email digests** (`RESEND_API_KEY` not set) — backend logs `[MOCKED EMAIL]` instead of sending.
+  Plug a real key into `/app/backend/.env` to go live.
 
-## App architecture (from repo)
+## Architecture summary
 **Backend** (`/app/backend`, FastAPI + Motor)
-- `server.py` (~1700 lines) — auth, clock in/out + geofencing, holidays, shifts,
-  roster LLM parser, drive (base64 files), form templates + checklists + AI summary,
-  PDF form sessions, notifications, weekly digest scheduler, HR docs (DocuSign-replacement)
-- `deps.py` — DB, JWT, password hashing, helpers
-- `routers/customers.py`, `routers/holidays.py`, `routers/hr.py` — modular routers
+- `server.py` — auth, clock in/out + geofencing, holidays, shifts, roster LLM parser, drive,
+  form templates + checklists, AI summaries, PDF form sessions, notifications, weekly digest, HR docs
+- `deps.py` — DB, JWT, password hashing
+- `routers/` — customers, holidays, hr
 
 **Frontend** (`/app/frontend`, Expo SDK 54)
-- Expo Router (`app/_layout.tsx`, `app/index.tsx`, `app/admin.tsx`, `app/(tabs)/…`)
-- `src/api.ts` axios client with AsyncStorage JWT
-- `src/auth.tsx` auth provider
-- Components for scheduler, drag-and-drop roster, PDF form filler, signature canvas
-- Cross-platform: works on web (`react-native-web`), iOS, Android
+- Expo Router (`app/_layout`, `app/index`, `app/(tabs)/{home,schedule,drive,forms,profile}`, `app/admin`)
+- `src/api.ts` axios + AsyncStorage JWT
+- Cross-platform: web (`react-native-web`), iOS, Android
+- Served as static export in production
 
 ## Tech stack
-- FastAPI 0.110, Motor 3.3, MongoDB 7
-- Expo SDK 54, React Native 0.81, React 19, Expo Router 6
-- emergentintegrations (Claude Sonnet 4.5 for roster parsing + form summaries)
-- Resend (email digests — MOCKED until `RESEND_API_KEY` set)
-- APScheduler (weekly digest + HR expiry sweeps)
+- FastAPI 0.110, Motor 3.3, MongoDB 7, APScheduler 3.11, ReportLab 4.5
+- Expo SDK 54, React Native 0.81, React 19, Expo Router 6, serve 14
+- Claude Sonnet 4.5 via emergentintegrations (roster PDF parsing, form AI summaries)
+- Resend (email digests — MOCKED)
 
-## Outstanding for production deploy
-**P0 (must do before going to real users):**
-- [ ] Replace `MONGO_URL` with production Atlas string (user has not supplied)
-- [ ] Replace `DB_NAME` with production DB name
-- [ ] Rotate `JWT_SECRET` to a deploy-only secret
-- [ ] Configure Emergent deploy with the above as production env vars (NOT in `.env`)
+## Still required from user for **real production**
+**P0:**
+- [ ] Production `MONGO_URL` (Atlas connection string with existing data)
+- [ ] Production `DB_NAME`
+- [ ] Fresh `JWT_SECRET` (rotate)
+- [ ] When deploying via Emergent's Deploy flow, set these as **deploy env vars**,
+      NOT in the committed `.env` (so secrets never leave the deploy pipeline)
 
 **P1:**
-- [ ] Set `RESEND_API_KEY` to enable real email digests (currently MOCKED — logs
-      `[MOCKED EMAIL]`)
-- [ ] Run `cd /app/frontend && expo export -p web` to produce a static build at
-      `/app/frontend/dist`, then either:
-      - (a) serve via FastAPI static mount, or
-      - (b) keep current `expo start --web` (dev server is fine for preview but a
-        static build is recommended for production performance)
-- [ ] EAS build configs for iOS/Android if you want native binaries
+- [ ] `RESEND_API_KEY` to un-mock the weekly digest emails
+- [ ] EAS account login + `eas build:configure` to populate `extra.eas.projectId` (one-time)
+- [ ] Real app icons / splash images (currently uses repo defaults)
 
 **P2:**
-- [ ] Push notifications (FCM/APNs) wiring already scaffolded in `src/push.ts`
+- [ ] FCM/APNs server keys for push notifications (scaffold already in `src/push.ts`)
+- [ ] Apple Developer Program + Google Play Console enrollment for store submission
 
-## Smart enhancement
-The roster LLM parser (Claude Sonnet 4.5) already turns a messy Google-Sheets PDF roster
-into structured rows for the admin to publish. Worth surfacing this as a one-click
-"Import from PDF" CTA on the Scheduler dashboard — saves managers ~30 min/week and is
-a great upsell hook for the SaaS tier.
+## Smart enhancement (already implemented this session)
+**One-click AI roster import** — admins now see a `Import roster from PDF` banner on the
+Schedule tab that opens the existing Claude Sonnet 4.5 roster parser in one tap. This was
+buried inside the admin panel before. Saves managers ~30 min/week and is an obvious upsell
+hook for the SaaS tier.

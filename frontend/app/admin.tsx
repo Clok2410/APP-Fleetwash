@@ -10,7 +10,7 @@ import {
   TextInput,
   useWindowDimensions,
 } from "react-native";
-import { useFocusEffect, useRouter, Redirect } from "expo-router";
+import { useFocusEffect, useRouter, Redirect, useLocalSearchParams } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Linking, Platform } from "react-native";
@@ -28,6 +28,7 @@ import { Calendar } from "react-native-calendars";
 
 export default function AdminScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ openRoster?: string; tab?: string }>();
   const { user } = useAuth();
   const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "pdf-forms" | "users" | "depots" | "offsite" | "customers" | "hr">("holidays");
   const [holidays, setHolidays] = useState<any[]>([]);
@@ -58,6 +59,20 @@ export default function AdminScreen() {
   const [rosterStartTime, setRosterStartTime] = useState("06:30");
   const [rosterNotify, setRosterNotify] = useState(true);
   const [rosterTemplates, setRosterTemplates] = useState<any[]>([]);
+
+  // Deep-link: ?openRoster=1 (from Schedule tab AI banner) → jump to Shifts + open roster modal
+  useEffect(() => {
+    if (params?.openRoster === "1") {
+      setTab("shifts");
+      setRosterOpen(true);
+    } else if (typeof params?.tab === "string") {
+      const t = params.tab as any;
+      if (["holidays","shifts","forms","pdf-forms","users","depots","offsite","customers","hr"].includes(t)) {
+        setTab(t);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params?.openRoster, params?.tab]);
   // A1: Holiday detail drawer
   const [holidayDetail, setHolidayDetail] = useState<any>(null);
   const [hdStart, setHdStart] = useState("");

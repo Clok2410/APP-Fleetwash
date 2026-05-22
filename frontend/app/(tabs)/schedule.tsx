@@ -10,7 +10,7 @@ import {
   Modal,
   TextInput,
 } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Calendar } from "react-native-calendars";
@@ -21,6 +21,7 @@ import CustomerModal from "../../src/components/CustomerModal";
 
 export default function ScheduleScreen() {
   const { user } = useAuth();
+  const router = useRouter();
   const [shifts, setShifts] = useState<any[]>([]);
   const [swaps, setSwaps] = useState<any[]>([]);
   const [availability, setAvailability] = useState<any[]>([]);
@@ -94,6 +95,26 @@ export default function ScheduleScreen() {
         <Text style={typography.label}>Workforce</Text>
         <Text style={typography.h2}>My Schedule.</Text>
       </View>
+
+      {user?.role === "admin" && (
+        <TouchableOpacity
+          testID="ai-roster-import-banner"
+          activeOpacity={0.85}
+          onPress={() => router.push("/admin?openRoster=1")}
+          style={styles.aiBanner}
+        >
+          <View style={styles.aiBannerIcon}>
+            <Feather name="zap" size={18} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.aiBannerTitle}>Import roster from PDF</Text>
+            <Text style={styles.aiBannerSub}>
+              Claude Sonnet 4.5 parses your Google Sheets roster into shifts in seconds.
+            </Text>
+          </View>
+          <Feather name="arrow-right" size={20} color={colors.primary} />
+        </TouchableOpacity>
+      )}
 
       <View style={styles.tabs}>
         <TouchableOpacity
@@ -393,6 +414,28 @@ function Empty({ message, icon }: any) {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
   header: { padding: spacing.lg, paddingBottom: 0 },
+  aiBanner: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    backgroundColor: colors.brandSoft,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  aiBannerIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  aiBannerTitle: { fontSize: 15, fontWeight: "700", color: colors.textPrimary },
+  aiBannerSub: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   tabs: { flexDirection: "row", padding: spacing.lg, gap: spacing.sm },
   tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: radius.pill, backgroundColor: colors.surface },
   tabActive: { backgroundColor: colors.primary },
