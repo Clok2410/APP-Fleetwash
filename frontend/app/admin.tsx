@@ -703,6 +703,31 @@ export default function AdminScreen() {
     }
   };
 
+  // Publish the raw PDF for ALL staff to view (no per-staff mapping needed)
+  const [pubBusy, setPubBusy] = useState(false);
+  const publishPdfForViewing = async () => {
+    if (!rosterFile) return Alert.alert("Pick a PDF first");
+    const defaultTitle = rosterFile.name?.replace(/\.pdf$/i, "") || `Roster ${new Date().toISOString().slice(0, 10)}`;
+    setPubBusy(true);
+    try {
+      const { data } = await api.post("/published-rosters", {
+        title: defaultTitle,
+        pdf_base64: rosterFile.base64,
+        notify: rosterNotify,
+      });
+      Alert.alert(
+        "Roster published",
+        `"${data.title}" is now visible to all staff on their Schedule tab.${rosterNotify ? "\n\nNotifications sent." : ""}`,
+      );
+      setRosterFile(null);
+      setRosterOpen(false);
+    } catch (e: any) {
+      Alert.alert("Publish failed", e.response?.data?.detail || "Try again");
+    } finally {
+      setPubBusy(false);
+    }
+  };
+
   // ---- Roster Templates (save / load) ----
   const loadRosterTemplates = async () => {
     try {
@@ -2767,9 +2792,19 @@ export default function AdminScreen() {
                 <Text style={{ fontWeight: "700", color: colors.primary, marginTop: 6 }} numberOfLines={1}>
                   {rosterFile.name}
                 </Text>
-                <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 10, flexWrap: "wrap", justifyContent: "center" }}>
                   <TouchableOpacity onPress={() => setRosterFile(null)} style={[styles.modalBtn, { backgroundColor: colors.surface }]}>
                     <Text style={{ color: colors.primary, fontWeight: "700" }}>Re-pick</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    testID="publish-pdf-for-viewing"
+                    onPress={publishPdfForViewing}
+                    disabled={pubBusy}
+                    style={[styles.modalBtn, { backgroundColor: colors.success, opacity: pubBusy ? 0.6 : 1 }]}
+                  >
+                    <Text style={{ color: "#fff", fontWeight: "700" }}>
+                      {pubBusy ? "Publishing…" : "Publish to all staff"}
+                    </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     testID="parse-roster"
@@ -2782,6 +2817,10 @@ export default function AdminScreen() {
                     </Text>
                   </TouchableOpacity>
                 </View>
+                <Text style={[typography.small, { color: colors.textMuted, marginTop: 10, textAlign: "center", paddingHorizontal: 8 }]}>
+                  • Publish: every staff member sees the PDF on their Schedule tab. No per-name mapping needed.{"\n"}
+                  • Parse with AI: extract the staff × day grid, map each row to a user, generate individual shifts.
+                </Text>
               </View>
             )}
 

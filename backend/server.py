@@ -1067,6 +1067,111 @@ async def delete_roster_template(tid: str, _=Depends(require_admin)):
     return {"ok": True}
 
 
+# ----------------- Published Roster PDFs (visible to ALL staff) -----------------
+class PublishedRosterIn(BaseModel):
+    title: str  # e.g. "Week of 2026-05-25"
+    week_start: Optional[str] = None  # YYYY-MM-DD (Monday) — optional label
+    pdf_base64: str  # full PDF as base64
+    notify: bool = True  # send a notification to every active staff member
+
+
+@api.post("/published-rosters")
+async def publish_pdf_roster(body: PublishedRosterIn, current=Depends(require_admin)):
+    """Admin publishes a roster PDF that ALL staff can view (no per-staff mapping required)."""
+    import base64
+    try:
+        pdf_bytes = base64.b64decode(body.pdf_base64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid PDF base64")
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Not a valid PDF")
+    if not body.title or not body.title.strip():
+        raise HTTPException(status_code=400, detail="Title required")
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": body.title.strip(),
+        "week_start": body.week_start or None,
+        "pdf_base64": body.pdf_base64,
+        "size": len(pdf_bytes),
+        "published_by": current["id"],
+        "published_by_name": current.get("name"),
+        "published_at": now_utc(),
+    }
+    await db.published_rosters.insert_one(doc)
+
+    if body.notify:
+        try:
+            staff = await db.users.find(
+                {"active": {"$ne": False}}, {"id": 1}
+            ).to_list(1000)
+            for u in staff:
+                if u["id"] == current["id"]:
+                    continue
+                try:
+                    await notify(
+                        u["id"],
+                        "New roster published",
+                        body.title.strip(),
+                        "roster",
+                        doc["id"],
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception("Notify on published roster failed (non-fatal)")
+
+    out = {k: v for k, v in doc.items() if k != "pdf_base64"}
+    return serialize(out)
+
+
+@api.get("/published-rosters")
+async def list_published_rosters(_=Depends(get_current_user)):
+    """Anyone authenticated can list published rosters (newest first). PDF data is NOT returned here."""
+    docs = await db.published_rosters.find(
+        {}, {"pdf_base64": 0}
+    ).sort("published_at", -1).to_list(200)
+    return [serialize(d) for d in docs]
+
+
+@api.get("/published-rosters/latest")
+async def latest_published_roster(_=Depends(get_current_user)):
+    """Returns the most recently published roster (metadata only). 404 if none."""
+    doc = await db.published_rosters.find_one(
+        {}, sort=[("published_at", -1)], projection={"pdf_base64": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="No roster published yet")
+    return serialize(doc)
+
+
+@api.get("/published-rosters/{rid}/pdf")
+async def get_published_roster_pdf(rid: str, _=Depends(get_current_user)):
+    """Stream the PDF bytes. Anyone authenticated can fetch."""
+    import base64
+    doc = await db.published_rosters.find_one({"id": rid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Roster not found")
+    try:
+        pdf_bytes = base64.b64decode(doc["pdf_base64"])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Corrupt PDF data")
+    safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in doc.get("title", "roster"))[:60]
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{safe_name}.pdf"'},
+    )
+
+
+@api.delete("/published-rosters/{rid}")
+async def delete_published_roster(rid: str, _=Depends(require_admin)):
+    res = await db.published_rosters.delete_one({"id": rid})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Roster not found")
+    return {"ok": True}
+
+
 @api.post("/shifts")
 async def create_shift(body: ShiftIn, _=Depends(require_admin)):
     user = await db.users.find_one({"id": body.user_id})

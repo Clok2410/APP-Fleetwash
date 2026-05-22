@@ -18,6 +18,8 @@ import { api } from "../../src/api";
 import { useAuth } from "../../src/auth";
 import { colors, spacing, radius, typography } from "../../src/theme";
 import CustomerModal from "../../src/components/CustomerModal";
+import * as Linking from "expo-linking";
+import { Platform } from "react-native";
 
 export default function ScheduleScreen() {
   const { user } = useAuth();
@@ -35,6 +37,7 @@ export default function ScheduleScreen() {
   const [pinnedNotes, setPinnedNotes] = useState<Record<string, any[]>>({});
   const [availDate, setAvailDate] = useState<string>("");
   const [availNote, setAvailNote] = useState<string>("");
+  const [latestRoster, setLatestRoster] = useState<any>(null);
 
   const load = useCallback(async () => {
     try {
@@ -48,6 +51,13 @@ export default function ScheduleScreen() {
       setSwaps(sw.data);
       setUsers(u.data.filter((x: any) => x.id !== user?.id && x.role === "staff"));
       setAvailability(av.data || []);
+      // Latest published roster PDF (separate try because 404 is normal when none published)
+      try {
+        const { data: r } = await api.get("/published-rosters/latest");
+        setLatestRoster(r);
+      } catch {
+        setLatestRoster(null);
+      }
       // Fetch pinned notes for each unique customer linked to a shift
       const cIds = Array.from(new Set((s.data || []).map((x: any) => x.customer_id).filter(Boolean)));
       const noteMap: Record<string, any[]> = {};
@@ -95,6 +105,64 @@ export default function ScheduleScreen() {
         <Text style={typography.label}>Workforce</Text>
         <Text style={typography.h2}>My Schedule.</Text>
       </View>
+
+      {latestRoster && (
+        <TouchableOpacity
+          testID="latest-roster-card"
+          activeOpacity={0.85}
+          onPress={async () => {
+            try {
+              const baseUrl = (process.env.EXPO_PUBLIC_BACKEND_URL || "").replace(/\/$/, "");
+              const token = (await import("@react-native-async-storage/async-storage")).default;
+              const t = await token.getItem("access_token");
+              const url = `${baseUrl}/api/published-rosters/${latestRoster.id}/pdf`;
+              if (Platform.OS === "web") {
+                // Fetch with token, open as blob in new tab
+                const res = await fetch(url, { headers: { Authorization: `Bearer ${t}` } });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const blob = await res.blob();
+                const objectUrl = URL.createObjectURL(blob);
+                window.open(objectUrl, "_blank");
+              } else {
+                // Mobile: open in browser; backend uses Bearer auth so we need a workaround.
+                // Easiest: ask the system browser to open the PDF via an authed deep-link.
+                // Quick approach: fetch into a local file, then share.
+                const FileSystem = await import("expo-file-system");
+                const Sharing = await import("expo-sharing");
+                const local = FileSystem.cacheDirectory + `roster-${latestRoster.id}.pdf`;
+                const dl = await FileSystem.downloadAsync(url, local, {
+                  headers: { Authorization: `Bearer ${t}` },
+                });
+                if (dl.status === 200) {
+                  if (await Sharing.isAvailableAsync()) {
+                    await Sharing.shareAsync(dl.uri, { mimeType: "application/pdf" });
+                  } else {
+                    Alert.alert("Downloaded", `PDF saved to: ${dl.uri}`);
+                  }
+                } else {
+                  throw new Error(`HTTP ${dl.status}`);
+                }
+              }
+            } catch (e: any) {
+              Alert.alert("Couldn't open PDF", String(e?.message || e));
+            }
+          }}
+          style={styles.rosterCard}
+        >
+          <View style={styles.rosterIcon}>
+            <Feather name="file-text" size={20} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={typography.label}>This Week's Roster</Text>
+            <Text style={styles.rosterTitle} numberOfLines={1}>{latestRoster.title}</Text>
+            <Text style={styles.rosterMeta}>
+              Published by {latestRoster.published_by_name || "Admin"}
+              {latestRoster.published_at ? ` · ${latestRoster.published_at.slice(0, 10)}` : ""}
+            </Text>
+          </View>
+          <Feather name="download" size={20} color={colors.success} />
+        </TouchableOpacity>
+      )}
 
       {user?.role === "admin" && (
         <TouchableOpacity
@@ -414,6 +482,28 @@ function Empty({ message, icon }: any) {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
   header: { padding: spacing.lg, paddingBottom: 0 },
+  rosterCard: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: colors.success,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  rosterIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: radius.md,
+    backgroundColor: colors.success,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rosterTitle: { fontSize: 15, fontWeight: "700", color: colors.textPrimary, marginTop: 2 },
+  rosterMeta: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
   aiBanner: {
     marginHorizontal: spacing.lg,
     marginTop: spacing.md,
