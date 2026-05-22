@@ -30,7 +30,7 @@ export default function AdminScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ openRoster?: string; tab?: string }>();
   const { user } = useAuth();
-  const [tab, setTab] = useState<"holidays" | "shifts" | "forms" | "pdf-forms" | "users" | "depots" | "offsite" | "customers" | "hr">("holidays");
+  const [tab, setTab] = useState<"holidays" | "shifts" | "hours" | "forms" | "pdf-forms" | "users" | "depots" | "offsite" | "customers" | "hr">("holidays");
   const [holidays, setHolidays] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [allShifts, setAllShifts] = useState<any[]>([]);
@@ -67,7 +67,7 @@ export default function AdminScreen() {
       setRosterOpen(true);
     } else if (typeof params?.tab === "string") {
       const t = params.tab as any;
-      if (["holidays","shifts","forms","pdf-forms","users","depots","offsite","customers","hr"].includes(t)) {
+      if (["holidays","shifts","hours","forms","pdf-forms","users","depots","offsite","customers","hr"].includes(t)) {
         setTab(t);
       }
     }
@@ -96,6 +96,13 @@ export default function AdminScreen() {
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
   // A3: HR profile
   const [hrStaff, setHrStaff] = useState<any[]>([]);
+  // Hours Sheets state
+  const [hoursWeek, setHoursWeek] = useState<string>(""); // YYYY-MM-DD Monday; empty=current
+  const [hoursData, setHoursData] = useState<any>(null);
+  const [hoursLoading, setHoursLoading] = useState(false);
+  const [hoursEditEntry, setHoursEditEntry] = useState<any | null>(null);
+  const [hoursDetailUserId, setHoursDetailUserId] = useState<string | null>(null);
+  const [hoursDetailEntries, setHoursDetailEntries] = useState<any[]>([]);
   const [hrActiveUserId, setHrActiveUserId] = useState<string | null>(null);
   const [newCustomerModal, setNewCustomerModal] = useState(false);
   const [ncName, setNcName] = useState("");
@@ -261,6 +268,106 @@ export default function AdminScreen() {
   useEffect(() => {
     if (tab === "hr") loadHrStaff();
   }, [tab, loadHrStaff]);
+
+  // Hours Sheets loader
+  const loadHours = useCallback(async (weekStart?: string) => {
+    setHoursLoading(true);
+    try {
+      const ws = (weekStart ?? hoursWeek).trim();
+      const { data } = await api.get("/clock/hours-sheet", { params: ws ? { week_start: ws } : {} });
+      setHoursData(data);
+      if (!weekStart && !hoursWeek) setHoursWeek(data.week_start);
+    } catch (e) {
+      setHoursData(null);
+    } finally {
+      setHoursLoading(false);
+    }
+  }, [hoursWeek]);
+  useEffect(() => {
+    if (tab === "hours") loadHours();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  const loadHoursDetail = async (userId: string) => {
+    setHoursDetailUserId(userId);
+    try {
+      const { data } = await api.get("/clock/history", { params: { user_id: userId } });
+      // Filter to current visible week
+      const ws = hoursData?.week_start;
+      const we = hoursData?.week_end;
+      const inRange = (data || []).filter((e: any) => {
+        const d = (e.clock_in || "").slice(0, 10);
+        return d >= ws && d <= we;
+      });
+      setHoursDetailEntries(inRange);
+    } catch {
+      setHoursDetailEntries([]);
+    }
+  };
+
+  const shiftHoursWeek = (deltaDays: number) => {
+    const cur = hoursWeek || hoursData?.week_start || new Date().toISOString().slice(0, 10);
+    const d = new Date(cur + "T00:00:00Z");
+    d.setUTCDate(d.getUTCDate() + deltaDays);
+    const next = d.toISOString().slice(0, 10);
+    setHoursWeek(next);
+    loadHours(next);
+  };
+
+  const saveHoursEntry = async () => {
+    if (!hoursEditEntry) return;
+    try {
+      await api.patch(`/clock/entries/${hoursEditEntry.id}`, {
+        clock_in: hoursEditEntry.clock_in_iso,
+        clock_out: hoursEditEntry.clock_out_iso,
+        note: hoursEditEntry.note,
+      });
+      setHoursEditEntry(null);
+      if (hoursDetailUserId) await loadHoursDetail(hoursDetailUserId);
+      await loadHours();
+    } catch (e: any) {
+      Alert.alert("Save failed", e.response?.data?.detail || "Try again");
+    }
+  };
+
+  const deleteHoursEntry = async (id: string) => {
+    if (!confirm_("Delete this clock entry permanently?")) return;
+    try {
+      await api.delete(`/clock/entries/${id}`);
+      if (hoursDetailUserId) await loadHoursDetail(hoursDetailUserId);
+      await loadHours();
+    } catch (e: any) {
+      Alert.alert("Delete failed", e.response?.data?.detail || "Try again");
+    }
+  };
+
+  const confirm_ = (msg: string) => {
+    if (Platform.OS === "web") return typeof window !== "undefined" ? window.confirm(msg) : true;
+    // On native we can't synchronously confirm — assume yes (user already tapped)
+    return true;
+  };
+
+  const exportHoursCsv = async () => {
+    try {
+      const token = (await import("@react-native-async-storage/async-storage")).default;
+      const t = await token.getItem("access_token");
+      const baseUrl = (process.env.EXPO_PUBLIC_BACKEND_URL || "").replace(/\/$/, "");
+      const ws = hoursData?.week_start;
+      const url = `${baseUrl}/api/clock/hours-sheet/export${ws ? `?week_start=${ws}` : ""}`;
+      if (Platform.OS === "web") {
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${t}` } });
+        const blob = await res.blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `hours-sheet-${ws}.csv`;
+        document.body.appendChild(a); a.click(); a.remove();
+      } else {
+        Alert.alert("Export", "CSV export is available on desktop/web.");
+      }
+    } catch (e: any) {
+      Alert.alert("Export failed", String(e?.message || e));
+    }
+  };
 
   const decideHoliday = async (id: string, decision: string) => {
     await api.post(`/holidays/requests/${id}/decision`, null, { params: { decision } });
@@ -892,6 +999,7 @@ export default function AdminScreen() {
   const tabIcons: Record<string, any> = {
     holidays: "calendar",
     shifts: "clock",
+    hours: "watch",
     forms: "file-text",
     "pdf-forms": "file",
     users: "users",
@@ -903,6 +1011,7 @@ export default function AdminScreen() {
   const tabLabels: Record<string, string> = {
     holidays: "Holidays",
     shifts: "Schedule",
+    hours: "Hours Sheets",
     forms: "Forms",
     "pdf-forms": "PDF Forms",
     users: "Employees",
@@ -946,7 +1055,7 @@ export default function AdminScreen() {
               )}
             </TouchableOpacity>
             {!sidebarCollapsed && <Text style={styles.sidebarSection}>MANAGE</Text>}
-            {(["holidays", "shifts", "offsite"] as const).map((t) => (
+            {(["holidays", "shifts", "hours", "offsite"] as const).map((t) => (
               <TouchableOpacity
                 key={t}
                 testID={`admin-tab-${t}`}
@@ -1081,7 +1190,7 @@ export default function AdminScreen() {
           </View>
 
           <View style={styles.tabs}>
-            {(["holidays", "shifts", "forms", "pdf-forms", "users", "hr", "depots", "offsite", "customers"] as const).map((t) => (
+            {(["holidays", "shifts", "hours", "forms", "pdf-forms", "users", "hr", "depots", "offsite", "customers"] as const).map((t) => (
               <TouchableOpacity
                 key={t}
                 testID={`admin-tab-${t}`}
@@ -1390,6 +1499,126 @@ export default function AdminScreen() {
                 </View>
               </TouchableOpacity>
             ))}
+          </>
+        )}
+
+        {tab === "hours" && (
+          <>
+            <View style={hsStyles.controls}>
+              <TouchableOpacity testID="hours-prev-week" onPress={() => shiftHoursWeek(-7)} style={hsStyles.weekNav}>
+                <Feather name="chevron-left" size={16} color={colors.primary} />
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Prev</Text>
+              </TouchableOpacity>
+              <View style={{ flex: 1, alignItems: "center" }}>
+                <Text style={typography.label}>Week</Text>
+                <Text style={[typography.h3, { marginTop: 2 }]}>
+                  {hoursData?.week_start || "…"} → {hoursData?.week_end || "…"}
+                </Text>
+              </View>
+              <TouchableOpacity testID="hours-next-week" onPress={() => shiftHoursWeek(7)} style={hsStyles.weekNav}>
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Next</Text>
+                <Feather name="chevron-right" size={16} color={colors.primary} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+              <TouchableOpacity
+                testID="hours-this-week"
+                onPress={() => { setHoursWeek(""); loadHours(""); }}
+                style={[hsStyles.pill, { backgroundColor: colors.brandSoft }]}
+              >
+                <Text style={{ color: colors.brand, fontWeight: "700" }}>This week</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="hours-refresh"
+                onPress={() => loadHours()}
+                style={[hsStyles.pill, { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border }]}
+              >
+                <Feather name="refresh-cw" size={13} color={colors.primary} />
+                <Text style={{ color: colors.primary, fontWeight: "700", marginLeft: 6 }}>Refresh</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="hours-export-csv"
+                onPress={exportHoursCsv}
+                style={[hsStyles.pill, { backgroundColor: colors.success }]}
+              >
+                <Feather name="download" size={13} color="#fff" />
+                <Text style={{ color: "#fff", fontWeight: "700", marginLeft: 6 }}>Export CSV</Text>
+              </TouchableOpacity>
+            </View>
+
+            {hoursLoading && !hoursData && (
+              <Text style={[typography.body, { textAlign: "center", padding: spacing.lg }]}>Loading…</Text>
+            )}
+
+            {hoursData && hoursData.rows && hoursData.rows.length > 0 && (
+              <>
+                <View style={hsStyles.summaryRow}>
+                  <View style={hsStyles.summaryCell}>
+                    <Text style={typography.label}>STAFF</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }]}>{hoursData.totals.staff_count}</Text>
+                  </View>
+                  <View style={hsStyles.summaryCell}>
+                    <Text style={typography.label}>TOTAL HOURS</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }]}>{hoursData.totals.total_hours}</Text>
+                  </View>
+                  <View style={hsStyles.summaryCell}>
+                    <Text style={typography.label}>NET (AFTER BREAKS)</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }]}>{hoursData.totals.net_hours}</Text>
+                  </View>
+                  <View style={hsStyles.summaryCell}>
+                    <Text style={typography.label}>HOLIDAY ACCRUED</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }]}>{hoursData.totals.accrued_holiday_hours}</Text>
+                  </View>
+                </View>
+
+                <View style={hsStyles.tableHeader}>
+                  <Text style={[hsStyles.thName]}>Employee</Text>
+                  {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => (
+                    <Text key={d} style={hsStyles.thDay}>{d}</Text>
+                  ))}
+                  <Text style={hsStyles.thTotal}>Total</Text>
+                </View>
+
+                {hoursData.rows.map((r: any) => (
+                  <TouchableOpacity
+                    key={r.user_id}
+                    testID={`hours-row-${r.user_id}`}
+                    onPress={() => loadHoursDetail(r.user_id)}
+                    style={hsStyles.row}
+                  >
+                    <View style={hsStyles.tdName}>
+                      <Text style={{ fontWeight: "700", color: colors.textPrimary }} numberOfLines={1}>
+                        {r.name}
+                      </Text>
+                      <Text style={{ fontSize: 11, color: colors.textMuted }} numberOfLines={1}>
+                        {r.employment_type === "part_time" ? "Part-time" : "Full-time"}
+                        {r.has_open_entry ? " · 🟢 currently clocked in" : ""}
+                      </Text>
+                    </View>
+                    {r.days.map((d: any) => (
+                      <Text
+                        key={d.date}
+                        style={[hsStyles.tdDay, d.hours > 0 && { color: colors.textPrimary, fontWeight: "600" }]}
+                      >
+                        {d.hours > 0 ? d.hours.toFixed(1) : "—"}
+                      </Text>
+                    ))}
+                    <Text style={hsStyles.tdTotal}>{r.total_hours}h</Text>
+                  </TouchableOpacity>
+                ))}
+
+                <Text style={[typography.small, { color: colors.textMuted, marginTop: 12, textAlign: "center" }]}>
+                  Tap any row to view + edit individual clock entries · Hours net of 30-min break per 8h worked · Holiday accrual = 1h per 3h net
+                </Text>
+              </>
+            )}
+
+            {hoursData && hoursData.rows && hoursData.rows.length === 0 && (
+              <Text style={[typography.body, { textAlign: "center", padding: spacing.lg, color: colors.textMuted }]}>
+                No active staff to report on.
+              </Text>
+            )}
           </>
         )}
 
@@ -3128,6 +3357,109 @@ export default function AdminScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Hours Sheets — per-user entry detail */}
+      <Modal visible={!!hoursDetailUserId} transparent animationType="slide" onRequestClose={() => { setHoursDetailUserId(null); setHoursDetailEntries([]); }}>
+        <View style={styles.modalBg}>
+          <View style={[styles.modalCard, { maxHeight: "85%" }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+              <Text style={typography.h3}>
+                Clock entries · {hoursData?.rows?.find((r: any) => r.user_id === hoursDetailUserId)?.name || ""}
+              </Text>
+              <View style={{ flex: 1 }} />
+              <TouchableOpacity onPress={() => { setHoursDetailUserId(null); setHoursDetailEntries([]); }}>
+                <Feather name="x" size={22} color={colors.primary} />
+              </TouchableOpacity>
+            </View>
+            <Text style={[typography.small, { color: colors.textMuted, marginBottom: 10 }]}>
+              Week {hoursData?.week_start} → {hoursData?.week_end}
+            </Text>
+
+            <ScrollView style={{ maxHeight: 500 }}>
+              {hoursDetailEntries.length === 0 && (
+                <Text style={[typography.body, { textAlign: "center", padding: spacing.lg, color: colors.textMuted }]}>
+                  No clock entries this week.
+                </Text>
+              )}
+              {hoursDetailEntries.map((e: any) => {
+                const cin = e.clock_in ? new Date(e.clock_in) : null;
+                const cout = e.clock_out ? new Date(e.clock_out) : null;
+                const dur = e.duration_seconds ? (e.duration_seconds / 3600).toFixed(2) : (cout && cin ? ((cout.getTime() - cin.getTime()) / 3600000).toFixed(2) : "—");
+                return (
+                  <View key={e.id} style={[styles.card, { marginBottom: 6 }]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontWeight: "700" }}>
+                        {cin ? cin.toLocaleString() : "—"}
+                      </Text>
+                      <Text style={typography.small}>
+                        → {cout ? cout.toLocaleString() : "still clocked in"} · {dur}h
+                      </Text>
+                      {e.off_site ? (
+                        <Text style={[typography.small, { color: colors.alert }]}>Off-site clock-in</Text>
+                      ) : null}
+                      {e.note ? <Text style={typography.small}>Note: {e.note}</Text> : null}
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => setHoursEditEntry({
+                        id: e.id,
+                        clock_in_iso: e.clock_in ? new Date(e.clock_in).toISOString().slice(0, 16) : "",
+                        clock_out_iso: e.clock_out ? new Date(e.clock_out).toISOString().slice(0, 16) : "",
+                        note: e.note || "",
+                      })}
+                      style={styles.smBtn}
+                    >
+                      <Feather name="edit-2" size={16} color={colors.primary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => deleteHoursEntry(e.id)} style={styles.smBtn}>
+                      <Feather name="trash-2" size={16} color={colors.alert} />
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Hours Sheets — edit individual clock entry */}
+      <Modal visible={!!hoursEditEntry} transparent animationType="slide" onRequestClose={() => setHoursEditEntry(null)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={typography.h3}>Edit clock entry</Text>
+            <Text style={typography.label}>Clock in (YYYY-MM-DDTHH:MM)</Text>
+            <TextInput
+              style={styles.input}
+              value={hoursEditEntry?.clock_in_iso || ""}
+              onChangeText={(v) => setHoursEditEntry((p: any) => ({ ...p, clock_in_iso: v }))}
+              placeholder="2026-05-22T08:00"
+              placeholderTextColor={colors.textMuted}
+            />
+            <Text style={[typography.label, { marginTop: 8 }]}>Clock out (blank = still clocked in)</Text>
+            <TextInput
+              style={styles.input}
+              value={hoursEditEntry?.clock_out_iso || ""}
+              onChangeText={(v) => setHoursEditEntry((p: any) => ({ ...p, clock_out_iso: v }))}
+              placeholder="2026-05-22T17:30"
+              placeholderTextColor={colors.textMuted}
+            />
+            <Text style={[typography.label, { marginTop: 8 }]}>Note</Text>
+            <TextInput
+              style={[styles.input, { height: 64 }]}
+              value={hoursEditEntry?.note || ""}
+              onChangeText={(v) => setHoursEditEntry((p: any) => ({ ...p, note: v }))}
+              multiline
+            />
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <TouchableOpacity onPress={() => setHoursEditEntry(null)} style={[styles.modalBtn, { backgroundColor: colors.surface }]}>
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={saveHoursEntry} style={[styles.modalBtn, { backgroundColor: colors.primary }]}>
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
     );
   }
@@ -3464,4 +3796,69 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     marginLeft: "auto",
   },
+});
+
+
+const hsStyles = StyleSheet.create({
+  controls: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 10,
+    marginBottom: 10,
+  },
+  weekNav: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+  },
+  pill: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+  },
+  summaryRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
+  },
+  summaryCell: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    padding: 10,
+    borderRadius: radius.md,
+  },
+  tableHeader: {
+    flexDirection: "row",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.md,
+    borderTopRightRadius: radius.md,
+    alignItems: "center",
+  },
+  thName: { flex: 2, fontSize: 11, fontWeight: "700", color: colors.textMuted, textTransform: "uppercase" },
+  thDay: { width: 44, fontSize: 11, fontWeight: "700", color: colors.textMuted, textAlign: "center" },
+  thTotal: { width: 60, fontSize: 11, fontWeight: "700", color: colors.textMuted, textAlign: "right" },
+  row: {
+    flexDirection: "row",
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+    backgroundColor: "#fff",
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    alignItems: "center",
+  },
+  tdName: { flex: 2, paddingRight: 6 },
+  tdDay: { width: 44, fontSize: 13, color: colors.textMuted, textAlign: "center" },
+  tdTotal: { width: 60, fontSize: 14, fontWeight: "700", color: colors.textPrimary, textAlign: "right" },
 });

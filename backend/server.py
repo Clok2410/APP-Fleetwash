@@ -699,6 +699,105 @@ async def clock_accrual(
     }
 
 
+@api.get("/clock/hours-sheet")
+async def admin_hours_sheet(
+    week_start: Optional[str] = None,  # YYYY-MM-DD (Monday); defaults to current week
+    _=Depends(require_admin),
+):
+    """Admin Hours Sheet: returns Mon-Sun hours for EVERY active staff user in one call.
+    Each row includes per-day hours, total hours, break-deducted net hours, accrued holiday hours,
+    and the underlying clock entry IDs so the admin can drill in to edit."""
+    if week_start:
+        try:
+            ref = datetime.fromisoformat(week_start).replace(tzinfo=timezone.utc)
+        except Exception:
+            raise HTTPException(status_code=400, detail="week_start must be YYYY-MM-DD")
+    else:
+        ref = datetime.utcnow().replace(tzinfo=timezone.utc)
+    mon, next_mon = _week_bounds_mon_sun(ref)
+    now_aware = datetime.utcnow().replace(tzinfo=timezone.utc)
+    cap_to = next_mon if now_aware >= next_mon else now_aware
+
+    users_docs = await db.users.find(
+        {"active": {"$ne": False}}, {"password_hash": 0}
+    ).sort("name", 1).to_list(1000)
+    entries = await db.clock_entries.find(
+        {"clock_in": {"$gte": mon, "$lt": next_mon}}
+    ).sort("clock_in", 1).to_list(5000)
+
+    entries_by_user: Dict[str, List[Dict[str, Any]]] = {}
+    for e in entries:
+        entries_by_user.setdefault(e["user_id"], []).append(e)
+
+    rows = []
+    week_total_secs = 0
+    for u in users_docs:
+        u_entries = entries_by_user.get(u["id"], [])
+        per_day = _bucket_entries_by_day(u_entries, cap_to=cap_to)
+        days_arr = []
+        u_total_secs = 0
+        for i in range(7):
+            d = (mon + timedelta(days=i)).strftime("%Y-%m-%d")
+            h = per_day.get(d, 0.0)
+            days_arr.append({"date": d, "hours": round(h, 2)})
+            u_total_secs += int(h * 3600)
+        accr = _accrual_hours(u_total_secs)
+        rows.append({
+            "user_id": u["id"],
+            "name": u.get("name"),
+            "email": u.get("email"),
+            "role": u.get("role"),
+            "employment_type": u.get("employment_type") or "full_time",
+            "days": days_arr,
+            "total_hours": accr["worked_hours"],
+            "break_hours": accr["break_hours"],
+            "net_hours": accr["net_hours"],
+            "accrued_holiday_hours": accr["accrued_holiday_hours"],
+            "entry_count": len(u_entries),
+            "has_open_entry": any(e.get("clock_out") is None for e in u_entries),
+        })
+        week_total_secs += u_total_secs
+
+    week_accr = _accrual_hours(week_total_secs)
+    return {
+        "week_start": mon.strftime("%Y-%m-%d"),
+        "week_end": (next_mon - timedelta(days=1)).strftime("%Y-%m-%d"),
+        "rows": rows,
+        "totals": {
+            "total_hours": week_accr["worked_hours"],
+            "net_hours": week_accr["net_hours"],
+            "accrued_holiday_hours": week_accr["accrued_holiday_hours"],
+            "staff_count": len(rows),
+        },
+    }
+
+
+@api.get("/clock/hours-sheet/export")
+async def admin_hours_sheet_csv(
+    week_start: Optional[str] = None,
+    _=Depends(require_admin),
+):
+    """Download the weekly hours sheet as CSV."""
+    data = await admin_hours_sheet(week_start=week_start)
+    import csv as _csv
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow([f"Hours Sheet — Week {data['week_start']} → {data['week_end']}"])
+    w.writerow([])
+    w.writerow(["Name", "Email", "Role", "Type", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
+                "Total Hours", "Break (h)", "Net Hours", "Holiday Accrued (h)"])
+    for r in data["rows"]:
+        day_h = [d["hours"] for d in r["days"]]
+        w.writerow([r["name"], r["email"], r["role"], r["employment_type"], *day_h,
+                    r["total_hours"], r["break_hours"], r["net_hours"], r["accrued_holiday_hours"]])
+    w.writerow([])
+    w.writerow(["WEEK TOTAL", "", "", "", "", "", "", "", "", "", "",
+                data["totals"]["total_hours"], "", data["totals"]["net_hours"], data["totals"]["accrued_holiday_hours"]])
+    out = io.BytesIO(buf.getvalue().encode("utf-8"))
+    fname = f"hours-sheet-{data['week_start']}.csv"
+    return StreamingResponse(out, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @api.patch("/clock/entries/{eid}")
 async def patch_clock_entry(eid: str, body: ClockEntryPatchIn, _=Depends(require_admin)):
     """Admin override: edit clock_in, clock_out, note, or location of a clock entry."""
@@ -1873,7 +1972,8 @@ def _send_smtp_email(
 
 
 async def _form_recipient_emails() -> List[str]:
-    """Returns admin emails opted-in to receive form submissions. Defaults to all active admins."""
+    """Returns admin emails opted-in to receive form submissions. Defaults to all active admins.
+    Additionally appends any emails listed in EXTRA_FORM_RECIPIENTS env var (comma-separated)."""
     admins = await db.users.find({"role": "admin", "active": {"$ne": False}}).to_list(200)
     out: List[str] = []
     for a in admins:
@@ -1882,6 +1982,13 @@ async def _form_recipient_emails() -> List[str]:
         em = (a.get("email") or "").strip()
         if em:
             out.append(em)
+    # Extra fixed recipients from .env (e.g. central inbox like fwash.phone3@gmail.com)
+    extra = (os.environ.get("EXTRA_FORM_RECIPIENTS") or "").strip()
+    if extra:
+        for em in extra.split(","):
+            em = em.strip()
+            if em and em not in out:
+                out.append(em)
     return out
 
 
@@ -2930,6 +3037,7 @@ async def start_pdf_session(tid: str, body: PdfSessionStartIn, current=Depends(g
         assigned = tmpl.get("assigned_user_ids") or []
         if assigned and current["id"] not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to you")
+    started_at = now_utc()
     sess = {
         "id": str(uuid.uuid4()),
         "template_id": tid,
@@ -2939,13 +3047,42 @@ async def start_pdf_session(tid: str, body: PdfSessionStartIn, current=Depends(g
         "status": "draft",
         "created_by": current["id"],
         "created_by_name": current.get("name"),
-        "created_at": now_utc(),
+        "created_at": started_at,
         "last_editor_id": current["id"],
         "last_editor_name": current.get("name"),
-        "last_edited_at": now_utc(),
+        "last_edited_at": started_at,
         "field_count": int(tmpl.get("field_count") or 0),
+        "opened_at": started_at,
+        "opened_by_id": current["id"],
+        "opened_by_name": current.get("name"),
     }
     await db.pdf_form_sessions.insert_one(sess)
+    # Notify ALL admins that this staff member has opened the SOP — with timestamp.
+    # Admins opening their own forms don't generate a notification (avoid noise).
+    if current.get("role") != "admin":
+        try:
+            ts_label = started_at.strftime("%Y-%m-%d %H:%M UTC")
+            await create_admin_notifications(
+                kind="pdf_form_opened",
+                title=f"SOP opened: {tmpl.get('title','PDF Form')}",
+                body=f"{current.get('name','Unknown')} opened the form at {ts_label}",
+                related_id=sess["id"],
+            )
+            # Also email admins (best-effort; SMTP-gated by env config)
+            admin_emails = await _form_recipient_emails()
+            if admin_emails:
+                _send_smtp_email(
+                    to_emails=admin_emails,
+                    subject=f"[StaffHub] SOP opened — {tmpl.get('title','PDF Form')}",
+                    body_text=(
+                        f"{current.get('name','Unknown')} ({current.get('email','')})\n"
+                        f"opened SOP form: {tmpl.get('title','PDF Form')}\n"
+                        f"at {ts_label}\n\n"
+                        f"You'll receive a second email with the completed PDF attached when they sign and submit."
+                    ),
+                )
+        except Exception:
+            logger.exception("PDF-opened notification failed (non-fatal)")
     return serialize(sess)
 
 
@@ -3012,17 +3149,53 @@ async def complete_pdf_session(sid: str, _=Depends(require_admin), current=Depen
         filled = _fill_pdf(pdf_bytes, sess.get("values") or {}, flatten=True)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Fill failed: {e}")
+    completed_at = now_utc()
     await db.pdf_form_sessions.update_one(
         {"id": sid},
         {"$set": {
             "status": "completed",
-            "completed_at": now_utc(),
+            "completed_at": completed_at,
             "completed_by": current["id"],
             "completed_by_name": current.get("name"),
             "filled_pdf_base64": base64.b64encode(filled).decode("utf-8"),
             "size_bytes": len(filled),
         }},
     )
+    # Email the completed PDF to admin(s) as an attachment + an in-app notification
+    try:
+        ts_label = completed_at.strftime("%Y-%m-%d %H:%M UTC")
+        opener_name = sess.get("opened_by_name") or sess.get("created_by_name") or "Unknown"
+        opener_email = ""
+        opener = await db.users.find_one({"id": sess.get("opened_by_id") or sess.get("created_by")})
+        if opener:
+            opener_email = opener.get("email", "")
+        safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in tmpl.get("title", "form"))[:60]
+        attach_name = f"{safe_title}_{opener_name.replace(' ','_')}_{completed_at.strftime('%Y%m%d-%H%M')}.pdf"
+
+        admin_emails = await _form_recipient_emails()
+        if admin_emails:
+            _send_smtp_email(
+                to_emails=admin_emails,
+                subject=f"[StaffHub] SOP completed — {tmpl.get('title','PDF Form')} — {opener_name}",
+                body_text=(
+                    f"SOP form completed and signed.\n\n"
+                    f"Form: {tmpl.get('title','PDF Form')}\n"
+                    f"Completed by: {opener_name}{f' <{opener_email}>' if opener_email else ''}\n"
+                    f"Completed at: {ts_label}\n"
+                    f"Marked complete by admin: {current.get('name','Admin')} <{current.get('email','')}>\n\n"
+                    f"The signed PDF is attached."
+                ),
+                attachment_bytes=filled,
+                attachment_filename=attach_name,
+            )
+        await create_admin_notifications(
+            kind="pdf_form_completed",
+            title=f"SOP signed: {tmpl.get('title','PDF Form')}",
+            body=f"{opener_name} signed and completed the form at {ts_label}. PDF emailed.",
+            related_id=sid,
+        )
+    except Exception:
+        logger.exception("PDF-completed email/notify failed (non-fatal)")
     return {"ok": True}
 
 
