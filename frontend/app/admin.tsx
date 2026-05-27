@@ -91,6 +91,7 @@ export default function AdminScreen() {
   const [fxKind, setFxKind] = useState<"all" | "form" | "pdf">("all");
   const [inboxDownloading, setInboxDownloading] = useState<string | null>(null);
   const [depots, setDepots] = useState<any[]>([]);
+  const [allDepots, setAllDepots] = useState<any[]>([]); // unified depots + customer locations
   const [offsite, setOffsite] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
@@ -169,7 +170,7 @@ export default function AdminScreen() {
       if (offUser) offsiteParams.user_id = offUser;
       if (offFrom) offsiteParams.date_from = offFrom;
       if (offTo) offsiteParams.date_to = offTo;
-      const [h, u, s, t, d, o, cust, pft, sw, av] = await Promise.all([
+      const [h, u, s, t, d, o, cust, pft, sw, av, dAll] = await Promise.all([
         api.get("/holidays/requests", { params: { all: true } }),
         api.get("/users"),
         api.get("/shifts", { params: { all: true } }),
@@ -180,12 +181,14 @@ export default function AdminScreen() {
         api.get("/pdf-forms/templates").catch(() => ({ data: [] })),
         api.get("/shifts/swaps").catch(() => ({ data: [] })),
         api.get("/availability", { params: { all: true } }).catch(() => ({ data: [] })),
+        api.get("/depots/all").catch(() => ({ data: [] })),
       ]);
       setHolidays(h.data);
       setUsers(u.data);
       setAllShifts(s.data);
       setAllTemplates(t.data);
       setDepots(d.data);
+      setAllDepots(dAll.data || []);
       setOffsite(o.data || []);
       setCustomers(cust.data || []);
       setPdfTemplates(pft.data || []);
@@ -194,12 +197,37 @@ export default function AdminScreen() {
     } catch {}
   }, [offDepot, offUser, offFrom, offTo]);
 
-  const openInMaps = (lat: number, lng: number) => {
+  const openInMaps = (lat: number, lng: number, label?: string) => {
+    const q = label ? encodeURIComponent(label) : "";
     const url = Platform.select({
-      ios: `https://maps.apple.com/?ll=${lat},${lng}&q=Off-site`,
-      default: `https://www.google.com/maps?q=${lat},${lng}`,
+      ios: `https://maps.apple.com/?ll=${lat},${lng}${q ? `&q=${q}` : ""}`,
+      default: `https://www.google.com/maps?q=${lat},${lng}${q ? `(${q})` : ""}`,
     })!;
-    Linking.openURL(url);
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      const w = window.open(url, "_blank", "noopener,noreferrer");
+      if (!w) Alert.alert("Popup blocked", "Allow popups for this site.");
+      return;
+    }
+    Linking.openURL(url).catch(() => Alert.alert("Couldn't open Maps"));
+  };
+
+  // Generic open: address or eircode → Maps search (used for customer sites with no lat/lng)
+  const openMapsAddress = (q?: string) => {
+    if (!q || !q.trim()) {
+      Alert.alert("No address", "This depot has no address. Add one in the customer record first.");
+      return;
+    }
+    const enc = encodeURIComponent(q.trim());
+    const url = Platform.select({
+      ios: `https://maps.apple.com/?q=${enc}`,
+      default: `https://www.google.com/maps/search/?api=1&query=${enc}`,
+    })!;
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      const w = window.open(url, "_blank", "noopener,noreferrer");
+      if (!w) Alert.alert("Popup blocked", "Allow popups for this site.");
+      return;
+    }
+    Linking.openURL(url).catch(() => Alert.alert("Couldn't open Maps"));
   };
 
   const createDepot = async () => {
@@ -2043,10 +2071,11 @@ export default function AdminScreen() {
           <>
             <TouchableOpacity testID="open-depot-modal" style={styles.addCta} onPress={() => setDepotModal(true)}>
               <Feather name="map-pin" size={16} color="#fff" />
-              <Text style={styles.addCtaText}>Add Depot</Text>
+              <Text style={styles.addCtaText}>Add Standalone Depot</Text>
             </TouchableOpacity>
             <Text style={[typography.small, { marginTop: 8, marginBottom: 4 }]}>
               Geofences: clock-ins outside any depot's radius are flagged "off-site" and notify all admins.
+              {"\n"}Customer locations appear here automatically once their address/eircode is geocoded.
             </Text>
             <TouchableOpacity
               testID="send-digest-btn"
@@ -2057,22 +2086,99 @@ export default function AdminScreen() {
               <Feather name="mail" size={16} color="#fff" />
               <Text style={styles.addCtaText}>{digestBusy ? "Generating…" : "Send Weekly Digest Now"}</Text>
             </TouchableOpacity>
-            {depots.map((d) => (
-              <View key={d.id} style={styles.card} testID={`depot-${d.id}`}>
-                <View style={[styles.smBtn, { backgroundColor: colors.brandSoft, width: 36, height: 36, borderRadius: 18 }]}>
-                  <Feather name="map-pin" size={16} color={colors.brand} />
+
+            {allDepots.length === 0 && (
+              <Text style={[typography.body, { textAlign: "center", padding: spacing.lg, color: colors.textMuted }]}>
+                No depots or customer locations yet. Add a depot above, or add a customer with an eircode/address.
+              </Text>
+            )}
+
+            {allDepots.map((d) => {
+              const isCustomer = d.source === "customer" || d.source === "customer_site";
+              const hasCoords = d.lat != null && d.lng != null;
+              return (
+                <View key={d.id} style={styles.card} testID={`depot-${d.id}`}>
+                  <View
+                    style={[
+                      styles.smBtn,
+                      {
+                        backgroundColor: isCustomer ? "#FEF3C7" : colors.brandSoft,
+                        width: 36, height: 36, borderRadius: 18,
+                      },
+                    ]}
+                  >
+                    <Feather
+                      name={isCustomer ? "briefcase" : "map-pin"}
+                      size={16}
+                      color={isCustomer ? "#B45309" : colors.brand}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <Text style={{ fontWeight: "700", color: colors.primary }}>{d.name}</Text>
+                      {isCustomer && (
+                        <View style={{ paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, backgroundColor: "#FEF3C7" }}>
+                          <Text style={{ fontSize: 10, fontWeight: "700", color: "#B45309" }}>
+                            {d.source === "customer_site" ? "CUSTOMER SITE" : "CUSTOMER"}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                    {hasCoords ? (
+                      <Text style={typography.small}>
+                        {d.lat.toFixed(4)}, {d.lng.toFixed(4)} · {d.radius_m}m radius
+                        {d.eircode ? ` · ${d.eircode}` : ""}
+                      </Text>
+                    ) : (
+                      <Text style={[typography.small, { color: colors.alert }]}>
+                        ⚠ No GPS yet · {d.eircode || d.address || "no address"} · tap 📍 to geocode
+                      </Text>
+                    )}
+                  </View>
+
+                  {/* Open in Maps */}
+                  <TouchableOpacity
+                    testID={`depot-maps-${d.id}`}
+                    onPress={() =>
+                      hasCoords
+                        ? openInMaps(d.lat, d.lng, d.name)
+                        : openMapsAddress(d.eircode || d.address)
+                    }
+                    style={[styles.smBtn, { marginRight: 4 }]}
+                  >
+                    <Feather name="external-link" size={14} color={colors.brand} />
+                  </TouchableOpacity>
+
+                  {/* Customer entries can't be deleted here — go to Customers tab. Standalone depots can be deleted. */}
+                  {d.source === "depot" ? (
+                    <TouchableOpacity onPress={async () => { await api.delete(`/depots/${d.id}`); await load(); }}>
+                      <Feather name="trash-2" size={14} color={colors.alert} />
+                    </TouchableOpacity>
+                  ) : !hasCoords ? (
+                    <TouchableOpacity
+                      testID={`depot-geocode-${d.id}`}
+                      onPress={async () => {
+                        try {
+                          if (d.source === "customer") {
+                            await api.post(`/customers/${d.customer_id}/geocode`);
+                          } else {
+                            await api.post(`/customers/${d.customer_id}/sites/${d.site_id}/geocode`);
+                          }
+                          await load();
+                          Alert.alert("Geocoded", "Coordinates have been added.");
+                        } catch (e: any) {
+                          Alert.alert("Couldn't geocode", e.response?.data?.detail || "Try a more specific address.");
+                        }
+                      }}
+                    >
+                      <Feather name="navigation" size={14} color={colors.success} />
+                    </TouchableOpacity>
+                  ) : (
+                    <View style={{ width: 14 }} />
+                  )}
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontWeight: "700", color: colors.primary }}>{d.name}</Text>
-                  <Text style={typography.small}>
-                    {d.lat?.toFixed(4)}, {d.lng?.toFixed(4)} · {d.radius_m}m radius
-                  </Text>
-                </View>
-                <TouchableOpacity onPress={async () => { await api.delete(`/depots/${d.id}`); await load(); }}>
-                  <Feather name="trash-2" size={14} color={colors.alert} />
-                </TouchableOpacity>
-              </View>
-            ))}
+              );
+            })}
           </>
         )}
 

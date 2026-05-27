@@ -145,15 +145,31 @@ export default function CustomerModal({ customerId, onClose }: Props) {
     Linking.openURL(`${kind}:${value}`);
   };
 
-  // A4: Open Google Maps for an eircode / address
+  // A4: Open Google/Apple Maps for an eircode / address. Works on web + native.
   const openMaps = (q?: string) => {
-    if (!q || !q.trim()) return;
+    if (!q || !q.trim()) {
+      Alert.alert("No address", "Add an address or eircode to this site first.");
+      return;
+    }
     const enc = encodeURIComponent(q.trim());
     const url = Platform.select({
       ios: `https://maps.apple.com/?q=${enc}`,
       default: `https://www.google.com/maps/search/?api=1&query=${enc}`,
     })!;
-    Linking.openURL(url);
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      // Linking.openURL is unreliable on react-native-web — use window.open directly
+      const w = window.open(url, "_blank", "noopener,noreferrer");
+      if (!w) {
+        Alert.alert(
+          "Popup blocked",
+          "Your browser blocked the new tab. Allow popups for this site, or copy the address and paste into Google Maps."
+        );
+      }
+      return;
+    }
+    Linking.openURL(url).catch(() =>
+      Alert.alert("Couldn't open Maps", "Address: " + q)
+    );
   };
 
   // A4: Open Profile editor (admin)
