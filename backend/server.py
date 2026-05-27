@@ -2767,7 +2767,8 @@ async def create_pdf_form_template(body: PdfFormTemplateIn, _=Depends(require_ad
 
 @api.get("/pdf-forms/templates")
 async def list_pdf_form_templates(current=Depends(get_current_user)):
-    docs = await db.pdf_form_templates.find().sort("created_at", -1).to_list(500)
+    # Hide HR envelope templates from the regular PDF Forms list — they're rendered via the HR tab
+    docs = await db.pdf_form_templates.find({"category": {"$ne": "hr_envelope"}}).sort("created_at", -1).to_list(500)
     # Admin sees all; staff sees only templates assigned to them (empty assigned_user_ids = visible to ALL)
     if current.get("role") != "admin":
         uid = current["id"]

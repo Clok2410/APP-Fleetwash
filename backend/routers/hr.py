@@ -27,6 +27,15 @@ class HRIssueIn(BaseModel):
     message: Optional[str] = None     # short note to staff
 
 
+class HRUploadIssueIn(BaseModel):
+    """Upload a PDF and issue an envelope to a staff member in one call (DocuSign-style)."""
+    title: str
+    user_id: str
+    pdf_base64: str
+    expires_at: Optional[str] = None
+    message: Optional[str] = None
+
+
 class HRSignIn(BaseModel):
     signature_base64: str             # PNG data (no data: prefix needed; we accept both)
     printed_name: Optional[str] = None
@@ -197,6 +206,109 @@ async def hr_issue(body: HRIssueIn, request: Request, current=Depends(require_ad
     return serialize(doc)
 
 
+@router.post("/hr/envelopes/upload-and-issue")
+async def hr_upload_and_issue(body: HRUploadIssueIn, request: Request, current=Depends(require_admin)):
+    """One-shot DocuSign-style flow: upload a PDF + create a hidden template + issue it to a staff
+    member in a single call. Auto-issues so the staff member gets the envelope immediately.
+
+    Stores the PDF as a `pdf_form_templates` row marked `category='hr_envelope'` so it doesn't
+    pollute the staff-facing PDF Forms list while still being signable through the existing flow."""
+    if not body.title or not body.title.strip():
+        raise HTTPException(status_code=400, detail="Title required")
+    user = await db.users.find_one({"id": body.user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    _validate_iso_date(body.expires_at, "expires_at")
+    try:
+        pdf_bytes = base64.b64decode(body.pdf_base64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid PDF base64")
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Not a valid PDF")
+
+    # Create the hidden template row
+    tpl_id = str(uuid.uuid4())
+    tpl_doc = {
+        "id": tpl_id,
+        "title": body.title.strip(),
+        "category": "hr_envelope",  # hidden from staff PDF Forms tab
+        "pdf_base64": body.pdf_base64,
+        "size": len(pdf_bytes),
+        "fields": [],
+        "field_count": 0,
+        "assigned_user_ids": [body.user_id],
+        "created_by": current["id"],
+        "created_by_name": current.get("name"),
+        "created_at": now_utc(),
+    }
+    await db.pdf_form_templates.insert_one(tpl_doc)
+
+    # Issue immediately
+    iid = str(uuid.uuid4())
+    iss_doc = {
+        "id": iid,
+        "template_id": tpl_id,
+        "template_title": body.title.strip(),
+        "user_id": body.user_id,
+        "user_name": user.get("name") or "",
+        "user_email": user.get("email") or "",
+        "issued_by": current["id"],
+        "issued_by_name": current.get("name") or "",
+        "issued_at": now_utc(),
+        "expires_at": body.expires_at or None,
+        "message": body.message or "",
+        "status": "pending",
+        "read_at": None,
+        "signed_at": None,
+        "signature_image_base64": None,
+        "signed_pdf_base64": None,
+        "audit": [
+            _audit_event(
+                "issued",
+                current["id"],
+                current.get("name"),
+                request,
+                extra={"template_id": tpl_id, "expires_at": body.expires_at, "uploaded_inline": True},
+            )
+        ],
+    }
+    await db.hr_issuances.insert_one(iss_doc)
+
+    # Best-effort push to staff member
+    try:
+        tok = user.get("expo_push_token")
+        if tok:
+            from server import _send_expo_push
+            await _send_expo_push(
+                [tok],
+                "HR envelope to sign",
+                f"{current.get('name') or 'Admin'} sent you: {body.title.strip()}",
+                data={"kind": "hr_issued", "issuance_id": iid},
+            )
+    except Exception:
+        pass
+    # Best-effort email to staff member
+    try:
+        from server import _send_smtp_email
+        if user.get("email"):
+            _send_smtp_email(
+                to_emails=[user["email"]],
+                subject=f"[StaffHub] Envelope to sign: {body.title.strip()}",
+                body_text=(
+                    f"Hi {user.get('name') or ''},\n\n"
+                    f"{current.get('name') or 'Admin'} sent you an envelope to sign: "
+                    f"{body.title.strip()}\n\n"
+                    f"{('Note: ' + body.message) if body.message else ''}\n\n"
+                    f"Open StaffHub and go to the HR tab to read and sign.\n"
+                    f"https://staff-scheduler-152.preview.emergentagent.com"
+                ),
+            )
+    except Exception:
+        pass
+
+    return serialize(iss_doc)
+
+
 @router.get("/hr/issuances")
 async def hr_list_issuances(
     user_id: Optional[str] = None,
@@ -260,6 +372,31 @@ async def hr_mark_read(iid: str, request: Request, current=Depends(get_current_u
         await db.hr_issuances.update_one(
             {"id": iid}, {"$set": updates, "$push": {"audit": ev}}
         )
+        # Notify admin(s) that staff has READ the envelope
+        try:
+            from server import create_admin_notifications, _form_recipient_emails, _send_smtp_email
+            ts = updates["read_at"].strftime("%Y-%m-%d %H:%M UTC")
+            title = doc.get("template_title") or "HR document"
+            await create_admin_notifications(
+                kind="hr_read",
+                title=f"Envelope read: {title}",
+                body=f"{current.get('name','Unknown')} opened the envelope at {ts}",
+                related_id=iid,
+            )
+            emails = await _form_recipient_emails()
+            if emails:
+                _send_smtp_email(
+                    to_emails=emails,
+                    subject=f"[StaffHub] Envelope read — {title}",
+                    body_text=(
+                        f"{current.get('name','Unknown')} ({current.get('email','')})\n"
+                        f"opened envelope: {title}\n"
+                        f"at {ts} from IP {ev.get('ip') or 'unknown'}\n\n"
+                        f"You'll receive a second email with the signed PDF attached when they sign."
+                    ),
+                )
+        except Exception:
+            pass
     updated = await db.hr_issuances.find_one({"id": iid})
     ser = serialize(updated)
     ser["has_signed_pdf"] = bool(updated.get("signed_pdf_base64"))
@@ -324,6 +461,38 @@ async def hr_sign(iid: str, body: HRSignIn, request: Request, current=Depends(ge
     await db.hr_issuances.update_one(
         {"id": iid}, {"$set": updates, "$push": {"audit": ev}}
     )
+
+    # Notify admin(s) + email signed PDF as attachment (DocuSign-style completion)
+    try:
+        from server import create_admin_notifications, _form_recipient_emails, _send_smtp_email
+        ts = signed_at.strftime("%Y-%m-%d %H:%M UTC")
+        title = doc.get("template_title") or "HR document"
+        await create_admin_notifications(
+            kind="hr_signed",
+            title=f"Envelope signed: {title}",
+            body=f"{current.get('name','Unknown')} signed the envelope at {ts}",
+            related_id=iid,
+        )
+        emails = await _form_recipient_emails()
+        if emails:
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)[:60]
+            attach_name = f"{safe}_{(printed or current.get('name','user')).replace(' ','_')}_{signed_at.strftime('%Y%m%d-%H%M')}.pdf"
+            _send_smtp_email(
+                to_emails=emails,
+                subject=f"[StaffHub] Envelope signed — {title} — {printed or current.get('name','')}",
+                body_text=(
+                    f"Envelope signed.\n\n"
+                    f"Document: {title}\n"
+                    f"Signed by: {printed or current.get('name','')} <{current.get('email','')}>\n"
+                    f"Signed at: {ts}\n"
+                    f"IP: {ev.get('ip') or 'unknown'}\n\n"
+                    f"The signed PDF is attached."
+                ),
+                attachment_bytes=signed_pdf_bytes,
+                attachment_filename=attach_name,
+            )
+    except Exception:
+        pass
 
     updated = await db.hr_issuances.find_one({"id": iid})
     ser = serialize(updated)

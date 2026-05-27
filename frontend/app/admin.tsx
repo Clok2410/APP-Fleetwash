@@ -97,6 +97,14 @@ export default function AdminScreen() {
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
   // A3: HR profile
   const [hrStaff, setHrStaff] = useState<any[]>([]);
+  // Envelope upload + send modal
+  const [envUploadOpen, setEnvUploadOpen] = useState(false);
+  const [envFile, setEnvFile] = useState<{ name: string; base64: string } | null>(null);
+  const [envTitle, setEnvTitle] = useState("");
+  const [envUserId, setEnvUserId] = useState<string>("");
+  const [envExpiry, setEnvExpiry] = useState<string>("");
+  const [envMessage, setEnvMessage] = useState<string>("");
+  const [envBusy, setEnvBusy] = useState(false);
   // Hours Sheets state
   const [hoursWeek, setHoursWeek] = useState<string>(""); // YYYY-MM-DD Monday; empty=current
   const [hoursData, setHoursData] = useState<any>(null);
@@ -811,6 +819,67 @@ export default function AdminScreen() {
     }
   };
 
+  const pickEnvelopePdf = async () => {
+    try {
+      const DocumentPicker = require("expo-document-picker");
+      const FileSystem = require("expo-file-system");
+      const res = await DocumentPicker.getDocumentAsync({
+        type: "application/pdf",
+        copyToCacheDirectory: true,
+      });
+      if (res.canceled) return;
+      const asset = (res.assets && res.assets[0]) || res;
+      const uri = asset.uri || asset.file?.uri;
+      const name = asset.name || "envelope.pdf";
+      let b64: string;
+      if (Platform.OS === "web" && asset.file) {
+        const ab = await asset.file.arrayBuffer();
+        let bin = "";
+        const bytes = new Uint8Array(ab);
+        for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+        b64 = global.btoa(bin);
+      } else {
+        b64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      }
+      setEnvFile({ name, base64: b64 });
+      // Auto-fill title from the filename (strip ".pdf")
+      if (!envTitle) setEnvTitle(name.replace(/\.pdf$/i, ""));
+    } catch (e: any) {
+      Alert.alert("Pick PDF failed", String(e?.message || e));
+    }
+  };
+
+  const sendEnvelope = async () => {
+    if (!envFile) return Alert.alert("Pick a PDF first");
+    if (!envTitle.trim()) return Alert.alert("Title required");
+    if (!envUserId) return Alert.alert("Pick a staff member to send to");
+    setEnvBusy(true);
+    try {
+      const { data } = await api.post("/hr/envelopes/upload-and-issue", {
+        title: envTitle.trim(),
+        user_id: envUserId,
+        pdf_base64: envFile.base64,
+        expires_at: envExpiry || null,
+        message: envMessage || null,
+      });
+      Alert.alert(
+        "Envelope sent",
+        `"${data.template_title}" sent to ${data.user_name}.\nThey'll get an email + push notification. You'll get an email back when they open it, and another with the signed PDF when they sign.`,
+      );
+      setEnvUploadOpen(false);
+      setEnvFile(null);
+      setEnvTitle("");
+      setEnvUserId("");
+      setEnvExpiry("");
+      setEnvMessage("");
+      await loadHrStaff();
+    } catch (e: any) {
+      Alert.alert("Send failed", e.response?.data?.detail || "Try again");
+    } finally {
+      setEnvBusy(false);
+    }
+  };
+
   const parseRoster = async () => {
     if (!rosterFile) return Alert.alert("Pick a PDF first");
     setRosterParsing(true);
@@ -1034,7 +1103,7 @@ export default function AdminScreen() {
     depots: "map-pin",
     offsite: "alert-circle",
     customers: "briefcase",
-    hr: "shield",
+    hr: "mail",
   };
   const tabLabels: Record<string, string> = {
     holidays: "Holidays",
@@ -1046,7 +1115,7 @@ export default function AdminScreen() {
     depots: "Depots",
     offsite: `Off-site${offsite.length ? ` · ${offsite.length}` : ""}`,
     customers: "Customers",
-    hr: "HR",
+    hr: "Envelopes",
   };
 
   // Compute dashboard metrics for the current view (holidays = pending count etc.)
@@ -2367,10 +2436,24 @@ export default function AdminScreen() {
 
         {tab === "hr" && (
           <>
-            <Text style={[typography.label, { marginBottom: 4 }]}>HR — DocuSign replacement</Text>
+            <Text style={[typography.label, { marginBottom: 4 }]}>Envelopes — DocuSign-style signing</Text>
             <Text style={[typography.small, { marginBottom: 8 }]}>
-              Click a staff member to view their HR profile (personal details, holiday balance, assigned documents).
-              Issue PDF documents that require read + signature; audit trail captures who signed, when, IP, and device.
+              Upload any PDF (contract, policy, SOP, HR doc) and send it to a staff member to read + sign.
+              Read receipts and signed-PDF emails are sent to fwash.phone3@gmail.com automatically.
+            </Text>
+
+            <TouchableOpacity
+              testID="open-envelope-upload"
+              style={styles.addCta}
+              onPress={() => setEnvUploadOpen(true)}
+            >
+              <Feather name="upload" size={16} color="#fff" />
+              <Text style={styles.addCtaText}>Upload & Send Envelope</Text>
+            </TouchableOpacity>
+
+            <Text style={[typography.label, { marginTop: 16, marginBottom: 6 }]}>Staff overview</Text>
+            <Text style={[typography.small, { marginBottom: 8 }]}>
+              Tap a staff member to see their envelope history, profile, and audit trail.
             </Text>
             {(() => {
               const sorted = [...hrStaff].sort((a: any, b: any) =>
@@ -3459,6 +3542,132 @@ export default function AdminScreen() {
                   <Text style={{ color: colors.alert, fontWeight: "700", marginLeft: 4 }}>Cancel request</Text>
                 </TouchableOpacity>
               )}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Upload & Send Envelope (DocuSign-style) */}
+      <Modal visible={envUploadOpen} transparent animationType="slide" onRequestClose={() => setEnvUploadOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={[styles.modalCard, { maxHeight: "92%" }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+              <Text style={typography.h3}>Send envelope to staff</Text>
+              <View style={{ flex: 1 }} />
+              <TouchableOpacity onPress={() => setEnvUploadOpen(false)}>
+                <Feather name="x" size={22} color={colors.primary} />
+              </TouchableOpacity>
+            </View>
+            <Text style={[typography.small, { marginBottom: 12, color: colors.textMuted }]}>
+              Upload a PDF. The staff member will get it instantly in their HR tab + push + email.
+              You'll get an email when they read it, and another with the signed PDF.
+            </Text>
+
+            <ScrollView style={{ maxHeight: 500 }}>
+              {/* Step 1 — pick PDF */}
+              {!envFile ? (
+                <TouchableOpacity
+                  testID="env-pick-pdf"
+                  onPress={pickEnvelopePdf}
+                  style={[styles.rosterPickBtn, { alignItems: "center", padding: 24 }]}
+                >
+                  <Feather name="file-plus" size={28} color={colors.brand} />
+                  <Text style={{ fontWeight: "700", color: colors.primary, marginTop: 8 }}>Tap to pick a PDF</Text>
+                  <Text style={[typography.small, { color: colors.textMuted, marginTop: 4 }]}>
+                    Contract, policy, SOP, induction — any PDF up to a few MB
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={[styles.rosterPickBtn, { alignItems: "center" }]}>
+                  <Feather name="file-text" size={22} color={colors.success} />
+                  <Text style={{ fontWeight: "700", color: colors.primary, marginTop: 6 }} numberOfLines={1}>
+                    {envFile.name}
+                  </Text>
+                  <TouchableOpacity onPress={() => setEnvFile(null)} style={{ marginTop: 6 }}>
+                    <Text style={{ color: colors.brand, fontWeight: "600" }}>Re-pick</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Step 2 — title */}
+              <Text style={[typography.label, { marginTop: 14 }]}>Title *</Text>
+              <TextInput
+                testID="env-title"
+                style={styles.input}
+                value={envTitle}
+                onChangeText={setEnvTitle}
+                placeholder="e.g. Employment Contract — Paul"
+                placeholderTextColor={colors.textMuted}
+              />
+
+              {/* Step 3 — recipient */}
+              <Text style={[typography.label, { marginTop: 14 }]}>Send to *</Text>
+              <ScrollView style={{ maxHeight: 200, marginTop: 6 }}>
+                {users
+                  .filter((u: any) => u.role === "staff" && u.active !== false)
+                  .sort((a: any, b: any) => (a.name || "").localeCompare(b.name || ""))
+                  .map((u: any) => (
+                    <TouchableOpacity
+                      key={u.id}
+                      testID={`env-pick-user-${u.id}`}
+                      onPress={() => setEnvUserId(u.id)}
+                      style={[
+                        styles.userRow,
+                        envUserId === u.id && styles.userRowActive,
+                      ]}
+                    >
+                      <Text style={{ fontWeight: "700", color: envUserId === u.id ? "#fff" : colors.primary }}>
+                        {u.name}
+                      </Text>
+                      <Text style={{ fontSize: 11, color: envUserId === u.id ? "#fff" : colors.textMuted }}>
+                        {u.email}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                {users.filter((u: any) => u.role === "staff").length === 0 && (
+                  <Text style={[typography.small, { textAlign: "center", padding: 16, color: colors.textMuted }]}>
+                    No staff users yet. Add them in the Employees tab first.
+                  </Text>
+                )}
+              </ScrollView>
+
+              {/* Step 4 — expiry & message */}
+              <Text style={[typography.label, { marginTop: 14 }]}>Expiry date (optional, YYYY-MM-DD)</Text>
+              <TextInput
+                testID="env-expiry"
+                style={styles.input}
+                value={envExpiry}
+                onChangeText={setEnvExpiry}
+                placeholder="2026-12-31"
+                placeholderTextColor={colors.textMuted}
+              />
+
+              <Text style={[typography.label, { marginTop: 14 }]}>Message (optional)</Text>
+              <TextInput
+                testID="env-message"
+                style={[styles.input, { height: 70 }]}
+                value={envMessage}
+                onChangeText={setEnvMessage}
+                placeholder="Please read carefully and sign by Friday."
+                placeholderTextColor={colors.textMuted}
+                multiline
+              />
+            </ScrollView>
+
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 16 }}>
+              <TouchableOpacity onPress={() => setEnvUploadOpen(false)} style={[styles.modalBtn, { backgroundColor: colors.surface }]}>
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="env-send"
+                onPress={sendEnvelope}
+                disabled={envBusy}
+                style={[styles.modalBtn, { backgroundColor: colors.success, opacity: envBusy ? 0.6 : 1 }]}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>
+                  {envBusy ? "Sending…" : "Send envelope"}
+                </Text>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
