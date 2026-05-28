@@ -78,7 +78,88 @@ export default function AdminScreen() {
   const [hdStart, setHdStart] = useState("");
   const [hdEnd, setHdEnd] = useState("");
   const [hdReason, setHdReason] = useState("");
-  const [hdType, setHdType] = useState<"annual" | "sick" | "unpaid">("annual");
+  const [hdType, setHdType] = useState<"annual" | "sick" | "unpaid" | "no_show">("annual");
+
+  // Admin manual leave entry modal
+  const [leaveAddOpen, setLeaveAddOpen] = useState(false);
+  const [leaveAddUserId, setLeaveAddUserId] = useState<string>("");
+  const [leaveAddType, setLeaveAddType] = useState<"annual" | "sick" | "unpaid" | "no_show">("unpaid");
+  const [leaveAddStart, setLeaveAddStart] = useState<string>("");
+  const [leaveAddEnd, setLeaveAddEnd] = useState<string>("");
+  const [leaveAddReason, setLeaveAddReason] = useState<string>("");
+  const [leaveAddBusy, setLeaveAddBusy] = useState(false);
+
+  // Date range leave report modal
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportStart, setReportStart] = useState<string>("");
+  const [reportEnd, setReportEnd] = useState<string>("");
+  const [reportType, setReportType] = useState<"" | "annual" | "sick" | "unpaid" | "no_show">("");
+  const [reportData, setReportData] = useState<any>(null);
+  const [reportBusy, setReportBusy] = useState(false);
+
+  const submitAdminLeave = async () => {
+    if (!leaveAddUserId) return Alert.alert("Pick a staff member");
+    if (!leaveAddStart || !leaveAddEnd) return Alert.alert("Pick start + end dates");
+    setLeaveAddBusy(true);
+    try {
+      const { data } = await api.post("/holidays/admin-add", {
+        user_id: leaveAddUserId,
+        type: leaveAddType,
+        start_date: leaveAddStart,
+        end_date: leaveAddEnd,
+        reason: leaveAddReason || null,
+        auto_approve: true,
+      });
+      setLeaveAddOpen(false);
+      await load();
+      const label = leaveAddType === "no_show" ? "no-show" : leaveAddType;
+      const silent = (leaveAddType === "unpaid" || leaveAddType === "no_show");
+      Alert.alert(
+        "Leave recorded",
+        `${data.days} day${data.days === 1 ? "" : "s"} of ${label} added for ${data.user_name}.${silent ? "\n\nStaff NOT notified." : "\n\nStaff was notified."}`,
+      );
+    } catch (e: any) {
+      Alert.alert("Couldn't add leave", e.response?.data?.detail || "Try again");
+    } finally {
+      setLeaveAddBusy(false);
+    }
+  };
+
+  const runLeaveReport = async () => {
+    if (!reportStart || !reportEnd) return Alert.alert("Pick start + end dates");
+    setReportBusy(true);
+    try {
+      const params: any = { start: reportStart, end: reportEnd };
+      if (reportType) params.type = reportType;
+      const { data } = await api.get("/holidays/report", { params });
+      setReportData(data);
+    } catch (e: any) {
+      Alert.alert("Report failed", e.response?.data?.detail || "Try again");
+    } finally {
+      setReportBusy(false);
+    }
+  };
+
+  const exportLeaveReportCsv = () => {
+    if (!reportData || Platform.OS !== "web") return;
+    const headers = ["Name", "Annual (days)", "Sick (days)", "Unpaid (days)", "No-show (days)", "Total"];
+    const rows = (reportData.rows as any[]).map((r) => [
+      r.user_name, r.annual, r.sick, r.unpaid, r.no_show, r.total,
+    ]);
+    const csv = [
+      [`Leave Report: ${reportData.start} → ${reportData.end}${reportData.type_filter ? " · type=" + reportData.type_filter : ""}`],
+      [],
+      headers,
+      ...rows,
+      [],
+      ["TOTAL", reportData.totals.annual, reportData.totals.sick, reportData.totals.unpaid, reportData.totals.no_show, reportData.grand_total],
+    ].map((r) => r.map((cell: any) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `leave-report-${reportData.start}_to_${reportData.end}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+  };
   // A2: Forms tab — Submissions Inbox
   const [formsView, setFormsView] = useState<"inbox" | "templates">("inbox");
   const [inbox, setInbox] = useState<any[]>([]);
@@ -1319,6 +1400,42 @@ export default function AdminScreen() {
       <>
         {tab === "holidays" && (
           <>
+            {/* Admin actions row: Add Leave (manual) + Date Range Report */}
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+              <TouchableOpacity
+                testID="open-admin-leave-add"
+                style={[styles.addCta, { flex: 1, minWidth: 200 }]}
+                onPress={() => {
+                  setLeaveAddUserId("");
+                  setLeaveAddType("unpaid");
+                  setLeaveAddStart("");
+                  setLeaveAddEnd("");
+                  setLeaveAddReason("");
+                  setLeaveAddOpen(true);
+                }}
+              >
+                <Feather name="plus-circle" size={16} color="#fff" />
+                <Text style={styles.addCtaText}>Add Leave / No-show (manual)</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="open-leave-report"
+                style={[styles.addCta, { flex: 1, minWidth: 200, backgroundColor: colors.brand }]}
+                onPress={() => {
+                  // Default to this month
+                  const today = new Date();
+                  const first = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+                  const last = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 0));
+                  setReportStart(first.toISOString().slice(0, 10));
+                  setReportEnd(last.toISOString().slice(0, 10));
+                  setReportData(null);
+                  setReportOpen(true);
+                }}
+              >
+                <Feather name="bar-chart-2" size={16} color="#fff" />
+                <Text style={styles.addCtaText}>Date Range Report</Text>
+              </TouchableOpacity>
+            </View>
+
             {/* Team Holiday Calendar */}
             <Text style={[typography.label, { marginBottom: 6 }]}>Team Holiday Calendar</Text>
             <View style={{ borderRadius: radius.lg, overflow: "hidden", borderWidth: 1, borderColor: colors.border, backgroundColor: "#fff" }}>
@@ -3458,15 +3575,15 @@ export default function AdminScreen() {
               {holidayDetail?.days ? ` · ${holidayDetail.days} day${holidayDetail.days === 1 ? "" : "s"}` : ""}
             </Text>
             <ScrollView nestedScrollEnabled style={{ maxHeight: 440 }}>
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                {(["annual", "sick", "unpaid"] as const).map((t) => (
+              <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+                {(["annual", "sick", "unpaid", "no_show"] as const).map((t) => (
                   <TouchableOpacity
                     key={t}
                     onPress={() => setHdType(t)}
                     style={[styles.typeChip, hdType === t && { backgroundColor: colors.primary }]}
                   >
                     <Text style={{ color: hdType === t ? "#fff" : colors.primary, fontWeight: "600", fontSize: 13 }}>
-                      {t}
+                      {t === "no_show" ? "no-show" : t}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -3544,6 +3661,200 @@ export default function AdminScreen() {
                 </TouchableOpacity>
               )}
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Admin Manual Leave Add (unpaid / no-show / annual / sick) */}
+      <Modal visible={leaveAddOpen} transparent animationType="slide" onRequestClose={() => setLeaveAddOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={[styles.modalCard, { maxHeight: "90%" }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+              <Text style={typography.h3}>Add leave manually</Text>
+              <View style={{ flex: 1 }} />
+              <TouchableOpacity onPress={() => setLeaveAddOpen(false)}>
+                <Feather name="x" size={22} color={colors.primary} />
+              </TouchableOpacity>
+            </View>
+            <Text style={[typography.small, { color: colors.textMuted, marginBottom: 10 }]}>
+              Records leave on the staff member's record. Unpaid and no-show entries are silent —
+              the staff member is not notified.
+            </Text>
+            <ScrollView style={{ maxHeight: 460 }}>
+              <Text style={[typography.label, { marginTop: 4 }]}>Type</Text>
+              <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+                {(["annual", "sick", "unpaid", "no_show"] as const).map((t) => (
+                  <TouchableOpacity
+                    key={t}
+                    testID={`leave-add-type-${t}`}
+                    onPress={() => setLeaveAddType(t)}
+                    style={[styles.typeChip, leaveAddType === t && { backgroundColor: colors.primary }]}
+                  >
+                    <Text style={{ color: leaveAddType === t ? "#fff" : colors.primary, fontWeight: "600", fontSize: 13 }}>
+                      {t === "no_show" ? "no-show" : t}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[typography.label, { marginTop: 14 }]}>Staff member *</Text>
+              <ScrollView style={{ maxHeight: 180, marginTop: 4 }}>
+                {users
+                  .filter((u: any) => u.role === "staff" && u.active !== false)
+                  .sort((a: any, b: any) => (a.name || "").localeCompare(b.name || ""))
+                  .map((u: any) => (
+                    <TouchableOpacity
+                      key={u.id}
+                      testID={`leave-add-user-${u.id}`}
+                      onPress={() => setLeaveAddUserId(u.id)}
+                      style={[styles.userRow, leaveAddUserId === u.id && styles.userRowActive]}
+                    >
+                      <Text style={{ fontWeight: "700", color: leaveAddUserId === u.id ? "#fff" : colors.primary }}>
+                        {u.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+              </ScrollView>
+
+              <Text style={[typography.label, { marginTop: 14 }]}>Start (YYYY-MM-DD) *</Text>
+              <TextInput testID="leave-add-start" style={styles.input} value={leaveAddStart} onChangeText={setLeaveAddStart} placeholder="2026-06-01" placeholderTextColor={colors.textMuted} />
+              <Text style={[typography.label, { marginTop: 10 }]}>End (YYYY-MM-DD) *</Text>
+              <TextInput testID="leave-add-end" style={styles.input} value={leaveAddEnd} onChangeText={setLeaveAddEnd} placeholder="2026-06-01" placeholderTextColor={colors.textMuted} />
+              <Text style={[typography.label, { marginTop: 10 }]}>Note (optional)</Text>
+              <TextInput
+                testID="leave-add-reason"
+                style={[styles.input, { height: 64 }]}
+                value={leaveAddReason}
+                onChangeText={setLeaveAddReason}
+                placeholder="e.g. Did not show up for shift / Approved unpaid for family event"
+                placeholderTextColor={colors.textMuted}
+                multiline
+              />
+            </ScrollView>
+
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 14 }}>
+              <TouchableOpacity onPress={() => setLeaveAddOpen(false)} style={[styles.modalBtn, { backgroundColor: colors.surface }]}>
+                <Text style={{ color: colors.primary, fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="leave-add-submit"
+                onPress={submitAdminLeave}
+                disabled={leaveAddBusy}
+                style={[styles.modalBtn, { backgroundColor: colors.primary, opacity: leaveAddBusy ? 0.6 : 1 }]}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>
+                  {leaveAddBusy ? "Saving…" : "Record leave"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Date Range Leave Report */}
+      <Modal visible={reportOpen} transparent animationType="slide" onRequestClose={() => setReportOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={[styles.modalCard, { maxHeight: "92%" }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+              <Text style={typography.h3}>Leave Report</Text>
+              <View style={{ flex: 1 }} />
+              <TouchableOpacity onPress={() => setReportOpen(false)}>
+                <Feather name="x" size={22} color={colors.primary} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+              <View style={{ flex: 1, minWidth: 130 }}>
+                <Text style={typography.label}>Start (YYYY-MM-DD)</Text>
+                <TextInput testID="report-start" style={styles.input} value={reportStart} onChangeText={setReportStart} placeholder="2026-05-01" placeholderTextColor={colors.textMuted} />
+              </View>
+              <View style={{ flex: 1, minWidth: 130 }}>
+                <Text style={typography.label}>End (YYYY-MM-DD)</Text>
+                <TextInput testID="report-end" style={styles.input} value={reportEnd} onChangeText={setReportEnd} placeholder="2026-05-31" placeholderTextColor={colors.textMuted} />
+              </View>
+            </View>
+
+            <Text style={typography.label}>Filter by type (optional)</Text>
+            <View style={{ flexDirection: "row", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+              {(["", "annual", "sick", "unpaid", "no_show"] as const).map((t) => (
+                <TouchableOpacity
+                  key={t || "all"}
+                  testID={`report-type-${t || "all"}`}
+                  onPress={() => setReportType(t)}
+                  style={[styles.typeChip, reportType === t && { backgroundColor: colors.primary }]}
+                >
+                  <Text style={{ color: reportType === t ? "#fff" : colors.primary, fontWeight: "600", fontSize: 12 }}>
+                    {t === "" ? "All" : t === "no_show" ? "no-show" : t}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <TouchableOpacity
+                testID="report-run"
+                onPress={runLeaveReport}
+                disabled={reportBusy}
+                style={[styles.modalBtn, { backgroundColor: colors.brand, flex: 1, opacity: reportBusy ? 0.6 : 1 }]}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>
+                  {reportBusy ? "Running…" : "Run report"}
+                </Text>
+              </TouchableOpacity>
+              {reportData && Platform.OS === "web" && (
+                <TouchableOpacity
+                  testID="report-export"
+                  onPress={exportLeaveReportCsv}
+                  style={[styles.modalBtn, { backgroundColor: colors.success, flex: 1 }]}
+                >
+                  <Feather name="download" size={14} color="#fff" />
+                  <Text style={{ color: "#fff", fontWeight: "700", marginLeft: 6 }}>Export CSV</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {reportData && (
+              <ScrollView style={{ maxHeight: 360, marginTop: 14 }}>
+                <View style={hsStyles.summaryRow}>
+                  <View style={hsStyles.summaryCell}>
+                    <Text style={typography.label}>ANNUAL</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }]}>{reportData.totals.annual}</Text>
+                  </View>
+                  <View style={hsStyles.summaryCell}>
+                    <Text style={typography.label}>SICK</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }]}>{reportData.totals.sick}</Text>
+                  </View>
+                  <View style={hsStyles.summaryCell}>
+                    <Text style={typography.label}>UNPAID</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }]}>{reportData.totals.unpaid}</Text>
+                  </View>
+                  <View style={hsStyles.summaryCell}>
+                    <Text style={typography.label}>NO-SHOW</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }]}>{reportData.totals.no_show}</Text>
+                  </View>
+                </View>
+
+                {reportData.rows.length === 0 && (
+                  <Text style={[typography.body, { textAlign: "center", padding: 20, color: colors.textMuted }]}>
+                    No leave in this date range.
+                  </Text>
+                )}
+
+                {reportData.rows.map((r: any) => (
+                  <View key={r.user_id} style={[styles.card, { marginBottom: 8 }]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontWeight: "700", color: colors.primary }}>{r.user_name}</Text>
+                      <Text style={typography.small}>
+                        Annual: {r.annual}d · Sick: {r.sick}d · Unpaid: {r.unpaid}d · No-show: {r.no_show}d
+                      </Text>
+                    </View>
+                    <Text style={{ fontWeight: "800", fontSize: 18, color: colors.primary }}>
+                      {r.total}d
+                    </Text>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
           </View>
         </View>
       </Modal>

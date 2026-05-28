@@ -22,14 +22,25 @@ class HolidayRequestIn(BaseModel):
     start_date: str  # YYYY-MM-DD
     end_date: str
     reason: Optional[str] = None
-    type: str = "annual"  # annual | sick | unpaid
+    type: str = "annual"  # annual | sick (admin-only: unpaid | no_show)
 
 
 class HolidayEditIn(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     reason: Optional[str] = None
-    type: Optional[str] = None  # 'annual'|'sick'|'unpaid'
+    type: Optional[str] = None  # 'annual'|'sick'|'unpaid'|'no_show'
+
+
+class AdminLeaveAddIn(BaseModel):
+    """Admin manually records leave on behalf of a staff member.
+    Used for unpaid leave and no-shows — staff don't get notified."""
+    user_id: str
+    type: str  # annual | sick | unpaid | no_show
+    start_date: str
+    end_date: str
+    reason: Optional[str] = None
+    auto_approve: bool = True  # default True since admin is the authority here
 
 
 class BankHolidayIn(BaseModel):
@@ -142,6 +153,11 @@ async def holiday_balance(current=Depends(get_current_user)):
 
 @router.post("/holidays/requests")
 async def create_holiday_request(body: HolidayRequestIn, current=Depends(get_current_user)):
+    # Staff cannot self-submit unpaid/no_show — those are admin-only manual entries
+    if body.type in ("unpaid", "no_show") and current.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="This leave type can only be added by an admin")
+    if body.type not in ("annual", "sick", "unpaid", "no_show"):
+        raise HTTPException(status_code=400, detail="type must be annual, sick, unpaid, or no_show")
     try:
         s = datetime.fromisoformat(body.start_date).date()
         e = datetime.fromisoformat(body.end_date).date()
@@ -195,8 +211,8 @@ async def edit_holiday_request(rid: str, body: HolidayEditIn, current=Depends(ge
     if body.reason is not None:
         updates["reason"] = body.reason
     if body.type is not None:
-        if body.type not in ("annual", "sick", "unpaid"):
-            raise HTTPException(status_code=400, detail="type must be 'annual'|'sick'|'unpaid'")
+        if body.type not in ("annual", "sick", "unpaid", "no_show"):
+            raise HTTPException(status_code=400, detail="type must be 'annual'|'sick'|'unpaid'|'no_show'")
         updates["type"] = body.type
     if updates:
         s_raw = updates.get("start_date", h.get("start_date"))
@@ -281,3 +297,145 @@ async def cancel_holiday(rid: str, current=Depends(get_current_user)):
             pass
     doc = await db.holiday_requests.find_one({"id": rid})
     return serialize(doc)
+
+
+
+# ----------------- Admin-only: manual leave entry + range report -----------------
+@router.post("/holidays/admin-add")
+async def admin_add_leave(body: AdminLeaveAddIn, current=Depends(require_admin)):
+    """Admin manually adds leave on behalf of a staff member (e.g. unpaid leave, no-show).
+    Staff is NOT notified for `unpaid` or `no_show` types (per user requirement)."""
+    if body.type not in ("annual", "sick", "unpaid", "no_show"):
+        raise HTTPException(status_code=400, detail="type must be annual, sick, unpaid, or no_show")
+    user = await db.users.find_one({"id": body.user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        s = datetime.fromisoformat(body.start_date).date()
+        e = datetime.fromisoformat(body.end_date).date()
+        if e < s:
+            raise HTTPException(status_code=400, detail="end_date cannot be before start_date")
+        days = (e - s).days + 1
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date format (YYYY-MM-DD)")
+
+    req = {
+        "id": str(uuid.uuid4()),
+        "user_id": body.user_id,
+        "user_name": user.get("name"),
+        "start_date": body.start_date,
+        "end_date": body.end_date,
+        "reason": body.reason,
+        "type": body.type,
+        "days": days,
+        "status": "approved" if body.auto_approve else "pending",
+        "created_at": now_utc(),
+        "created_by_admin": True,
+        "added_by_admin_id": current["id"],
+        "added_by_admin_name": current.get("name"),
+    }
+    if body.auto_approve:
+        req["decided_at"] = now_utc()
+    await db.holiday_requests.insert_one(req)
+
+    # Notification policy: silent for unpaid + no_show. Notify staff for annual/sick approvals
+    # (matches the regular flow's "approved" notification).
+    if body.type in ("annual", "sick") and body.auto_approve:
+        try:
+            from server import notify  # type: ignore  # noqa: E402
+            await notify(
+                body.user_id,
+                f"Leave approved ({body.type})",
+                f"{body.start_date} → {body.end_date} ({days} day{'s' if days != 1 else ''}) added by admin",
+                "holiday",
+                req["id"],
+            )
+        except Exception:
+            pass
+    return serialize(req)
+
+
+@router.get("/holidays/report")
+async def admin_leave_report(
+    start: str,
+    end: str,
+    type: Optional[str] = None,  # optional filter: annual|sick|unpaid|no_show
+    user_id: Optional[str] = None,  # optional filter: specific staff member
+    _=Depends(require_admin),
+):
+    """Admin date-range leave report. Returns approved (and admin-added) leave inside the range,
+    grouped per-user with per-type breakdown. Range is inclusive on both ends."""
+    _validate_iso_date(start, "start")
+    _validate_iso_date(end, "end")
+
+    # Find any leave that OVERLAPS the requested range
+    q: Dict[str, Any] = {
+        "status": {"$in": ["approved", "pending"]},
+        "start_date": {"$lte": end},
+        "end_date": {"$gte": start},
+    }
+    if type:
+        if type not in ("annual", "sick", "unpaid", "no_show"):
+            raise HTTPException(status_code=400, detail="Invalid type filter")
+        q["type"] = type
+    if user_id:
+        q["user_id"] = user_id
+
+    docs = await db.holiday_requests.find(q).sort("start_date", 1).to_list(2000)
+
+    # Compute the in-range days for each request (intersection of request range and report range)
+    def days_in_range(r: Dict[str, Any]) -> int:
+        try:
+            s_r = max(datetime.fromisoformat(r["start_date"]).date(), datetime.fromisoformat(start).date())
+            e_r = min(datetime.fromisoformat(r["end_date"]).date(), datetime.fromisoformat(end).date())
+            return max(0, (e_r - s_r).days + 1)
+        except Exception:
+            return 0
+
+    rows: Dict[str, Dict[str, Any]] = {}
+    grand_totals: Dict[str, int] = {"annual": 0, "sick": 0, "unpaid": 0, "no_show": 0}
+
+    for d in docs:
+        uid = d["user_id"]
+        t = d.get("type", "annual")
+        n = days_in_range(d)
+        if n <= 0:
+            continue
+        if uid not in rows:
+            rows[uid] = {
+                "user_id": uid,
+                "user_name": d.get("user_name"),
+                "annual": 0,
+                "sick": 0,
+                "unpaid": 0,
+                "no_show": 0,
+                "total": 0,
+                "entries": [],
+            }
+        rows[uid][t] = rows[uid].get(t, 0) + n
+        rows[uid]["total"] += n
+        if t in grand_totals:
+            grand_totals[t] += n
+        rows[uid]["entries"].append({
+            "id": d["id"],
+            "type": t,
+            "start_date": d["start_date"],
+            "end_date": d["end_date"],
+            "days_in_range": n,
+            "total_days": d.get("days"),
+            "status": d.get("status"),
+            "reason": d.get("reason"),
+            "added_by_admin": d.get("created_by_admin", False),
+        })
+
+    return {
+        "start": start,
+        "end": end,
+        "type_filter": type,
+        "user_filter": user_id,
+        "rows": sorted(rows.values(), key=lambda r: (r.get("user_name") or "").lower()),
+        "totals": grand_totals,
+        "grand_total": sum(grand_totals.values()),
+    }

@@ -41,7 +41,7 @@ export default function ProfileScreen() {
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [reason, setReason] = useState("");
-  const [type, setType] = useState<"annual" | "sick" | "unpaid">("annual");
+  const [type, setType] = useState<"annual" | "sick">("annual");
   const [mode, setMode] = useState<"single" | "range">("single");
 
   // Count of days (inclusive) selected — 0 if nothing chosen
@@ -632,7 +632,7 @@ export default function ProfileScreen() {
 
             {/* Type chips */}
             <View style={{ flexDirection: "row", gap: 8, marginTop: spacing.md }}>
-              {(["annual", "sick", "unpaid"] as const).map((t) => (
+              {(["annual", "sick"] as const).map((t) => (
                 <TouchableOpacity
                   key={t}
                   onPress={() => setType(t)}

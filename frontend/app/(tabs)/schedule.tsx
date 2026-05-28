@@ -38,6 +38,44 @@ export default function ScheduleScreen() {
   const [availDate, setAvailDate] = useState<string>("");
   const [availNote, setAvailNote] = useState<string>("");
   const [latestRoster, setLatestRoster] = useState<any>(null);
+  const [pdfPreview, setPdfPreview] = useState<{ blobUrl: string; title: string } | null>(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
+
+  const openRosterPdf = async () => {
+    if (!latestRoster) return;
+    setPdfLoading(true);
+    try {
+      const AsyncStorage = (await import("@react-native-async-storage/async-storage")).default;
+      const t = await AsyncStorage.getItem("access_token");
+      const baseUrl = (process.env.EXPO_PUBLIC_BACKEND_URL || "").replace(/\/$/, "");
+      const url = `${baseUrl}/api/published-rosters/${latestRoster.id}/pdf`;
+      if (Platform.OS === "web") {
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${t}` } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        // Open inline modal (no popup-blocking risk) — staff can also click "Download" inside the modal
+        setPdfPreview({ blobUrl: objectUrl, title: latestRoster.title });
+      } else {
+        const FileSystem = await import("expo-file-system");
+        const Sharing = await import("expo-sharing");
+        const local = FileSystem.cacheDirectory + `roster-${latestRoster.id}.pdf`;
+        const dl = await FileSystem.downloadAsync(url, local, {
+          headers: { Authorization: `Bearer ${t}` },
+        });
+        if (dl.status !== 200) throw new Error(`HTTP ${dl.status}`);
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(dl.uri, { mimeType: "application/pdf" });
+        } else {
+          Alert.alert("Downloaded", `PDF saved to: ${dl.uri}`);
+        }
+      }
+    } catch (e: any) {
+      Alert.alert("Couldn't open PDF", String(e?.message || e));
+    } finally {
+      setPdfLoading(false);
+    }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -110,43 +148,7 @@ export default function ScheduleScreen() {
         <TouchableOpacity
           testID="latest-roster-card"
           activeOpacity={0.85}
-          onPress={async () => {
-            try {
-              const baseUrl = (process.env.EXPO_PUBLIC_BACKEND_URL || "").replace(/\/$/, "");
-              const token = (await import("@react-native-async-storage/async-storage")).default;
-              const t = await token.getItem("access_token");
-              const url = `${baseUrl}/api/published-rosters/${latestRoster.id}/pdf`;
-              if (Platform.OS === "web") {
-                // Fetch with token, open as blob in new tab
-                const res = await fetch(url, { headers: { Authorization: `Bearer ${t}` } });
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const blob = await res.blob();
-                const objectUrl = URL.createObjectURL(blob);
-                window.open(objectUrl, "_blank");
-              } else {
-                // Mobile: open in browser; backend uses Bearer auth so we need a workaround.
-                // Easiest: ask the system browser to open the PDF via an authed deep-link.
-                // Quick approach: fetch into a local file, then share.
-                const FileSystem = await import("expo-file-system");
-                const Sharing = await import("expo-sharing");
-                const local = FileSystem.cacheDirectory + `roster-${latestRoster.id}.pdf`;
-                const dl = await FileSystem.downloadAsync(url, local, {
-                  headers: { Authorization: `Bearer ${t}` },
-                });
-                if (dl.status === 200) {
-                  if (await Sharing.isAvailableAsync()) {
-                    await Sharing.shareAsync(dl.uri, { mimeType: "application/pdf" });
-                  } else {
-                    Alert.alert("Downloaded", `PDF saved to: ${dl.uri}`);
-                  }
-                } else {
-                  throw new Error(`HTTP ${dl.status}`);
-                }
-              }
-            } catch (e: any) {
-              Alert.alert("Couldn't open PDF", String(e?.message || e));
-            }
-          }}
+          onPress={openRosterPdf}
           style={styles.rosterCard}
         >
           <View style={styles.rosterIcon}>
@@ -160,7 +162,7 @@ export default function ScheduleScreen() {
               {latestRoster.published_at ? ` · ${latestRoster.published_at.slice(0, 10)}` : ""}
             </Text>
           </View>
-          <Feather name="download" size={20} color={colors.success} />
+          <Feather name={pdfLoading ? "loader" : "eye"} size={20} color={colors.success} />
         </TouchableOpacity>
       )}
 
@@ -466,6 +468,65 @@ export default function ScheduleScreen() {
         </View>
       </Modal>
       <CustomerModal customerId={activeCustomerId} onClose={() => setActiveCustomerId(null)} />
+
+      {/* PDF Roster preview modal (web) */}
+      <Modal
+        visible={!!pdfPreview}
+        animationType="slide"
+        onRequestClose={() => {
+          if (pdfPreview?.blobUrl && typeof URL !== "undefined") URL.revokeObjectURL(pdfPreview.blobUrl);
+          setPdfPreview(null);
+        }}
+      >
+        <SafeAreaView style={{ flex: 1, backgroundColor: "#000" }}>
+          <View style={{ flexDirection: "row", alignItems: "center", padding: 12, backgroundColor: "#111", gap: 8 }}>
+            <Feather name="file-text" size={18} color="#fff" />
+            <Text style={{ color: "#fff", fontWeight: "700", flex: 1 }} numberOfLines={1}>
+              {pdfPreview?.title}
+            </Text>
+            {Platform.OS === "web" && pdfPreview?.blobUrl && (
+              <TouchableOpacity
+                testID="roster-download"
+                onPress={() => {
+                  if (typeof document !== "undefined") {
+                    const a = document.createElement("a");
+                    a.href = pdfPreview.blobUrl;
+                    a.download = `${(pdfPreview.title || "roster").replace(/[^a-z0-9-_]+/gi, "_")}.pdf`;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                  }
+                }}
+                style={{ paddingHorizontal: 12, paddingVertical: 6, backgroundColor: colors.success, borderRadius: 6 }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700" }}>Download</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              testID="roster-close"
+              onPress={() => {
+                if (pdfPreview?.blobUrl && typeof URL !== "undefined") URL.revokeObjectURL(pdfPreview.blobUrl);
+                setPdfPreview(null);
+              }}
+              style={{ paddingHorizontal: 12, paddingVertical: 6 }}
+            >
+              <Feather name="x" size={22} color="#fff" />
+            </TouchableOpacity>
+          </View>
+          {Platform.OS === "web" && pdfPreview?.blobUrl ? (
+            // @ts-ignore — iframe is a valid web element via react-native-web
+            <iframe
+              src={pdfPreview.blobUrl}
+              style={{ flex: 1, border: "none", width: "100%", height: "100%" }}
+              title={pdfPreview.title}
+            />
+          ) : (
+            <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+              <Text style={{ color: "#fff" }}>Preview opens in the native viewer.</Text>
+            </View>
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
