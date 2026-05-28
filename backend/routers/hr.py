@@ -300,11 +300,14 @@ async def hr_upload_and_issue(body: HRUploadIssueIn, request: Request, current=D
             )
     except Exception:
         pass
-    # Best-effort email to staff member — deep-link straight to the envelope
+    # Best-effort email to staff member — deep-link straight to the envelope + ATTACH the full PDF
+    # (legal copy: staff receive the contract as a real PDF, signed copy goes to admin after signature)
     try:
         from server import _send_smtp_email
         if user.get("email"):
             deep_link = f"https://staff-scheduler-152.preview.emergentagent.com/forms?envelope={iid}"
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in body.title.strip())[:60]
+            attach_name = f"{safe}.pdf"
             _send_smtp_email(
                 to_emails=[user["email"]],
                 subject=f"[StaffHub] Envelope to sign: {body.title.strip()}",
@@ -312,13 +315,16 @@ async def hr_upload_and_issue(body: HRUploadIssueIn, request: Request, current=D
                     f"Hi {user.get('name') or ''},\n\n"
                     f"{current.get('name') or 'Admin'} sent you an envelope to sign: "
                     f"{body.title.strip()}\n\n"
+                    f"The full document is attached to this email for your records.\n\n"
                     f"{('Note: ' + body.message) if body.message else ''}\n\n"
-                    f"Open this link (you'll need to log in first, then it'll take you straight to the document):\n"
+                    f"To sign electronically, open this link (log in first, it'll take you straight to the document):\n"
                     f"{deep_link}\n\n"
                     f"Or open StaffHub manually and go to:\n"
                     f"  Forms tab → Envelopes sub-tab\n"
                     f"  https://staff-scheduler-152.preview.emergentagent.com"
                 ),
+                attachment_bytes=pdf_bytes,
+                attachment_filename=attach_name,
             )
     except Exception:
         pass
@@ -507,6 +513,25 @@ async def hr_sign(iid: str, body: HRSignIn, request: Request, current=Depends(ge
                 ),
                 attachment_bytes=signed_pdf_bytes,
                 attachment_filename=attach_name,
+            )
+        # Also email a copy of the signed PDF to the staff member who signed
+        # (both parties retain a legal copy — standard contract practice)
+        if current.get("email"):
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)[:60]
+            staff_attach_name = f"{safe}_signed.pdf"
+            _send_smtp_email(
+                to_emails=[current["email"]],
+                subject=f"[StaffHub] Your signed copy: {title}",
+                body_text=(
+                    f"Hi {current.get('name', '')},\n\n"
+                    f"You signed: {title}\n"
+                    f"Signed at: {ts}\n\n"
+                    f"Your signed PDF is attached for your records.\n\n"
+                    f"A copy has also been delivered to your admin team.\n\n"
+                    f"— StaffHub"
+                ),
+                attachment_bytes=signed_pdf_bytes,
+                attachment_filename=staff_attach_name,
             )
     except Exception:
         pass
