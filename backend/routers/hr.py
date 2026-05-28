@@ -28,9 +28,10 @@ class HRIssueIn(BaseModel):
 
 
 class HRUploadIssueIn(BaseModel):
-    """Upload a PDF and issue an envelope to a staff member in one call (DocuSign-style)."""
+    """Upload a PDF and issue an envelope to one or many staff members in one call (DocuSign-style)."""
     title: str
-    user_id: str
+    user_id: Optional[str] = None     # legacy single-target (kept for backward compatibility)
+    user_ids: Optional[List[str]] = None  # bulk send: list of staff ids; takes precedence over user_id
     pdf_base64: str
     expires_at: Optional[str] = None
     message: Optional[str] = None
