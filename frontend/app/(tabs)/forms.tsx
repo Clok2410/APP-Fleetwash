@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -12,7 +12,7 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { api } from "../../src/api";
@@ -25,6 +25,7 @@ type Field = { key: string; label: string; type: string; required?: boolean; opt
 
 export default function FormsScreen() {
   const { user } = useAuth();
+  const params = useLocalSearchParams<{ envelope?: string; tab?: string }>();
   const [tab, setTab] = useState<"templates" | "submissions" | "hr">("templates");
   const [templates, setTemplates] = useState<any[]>([]);
   const [pdfTemplates, setPdfTemplates] = useState<any[]>([]);
@@ -68,6 +69,31 @@ export default function FormsScreen() {
       load();
     }, [load])
   );
+
+  // Deep-link from email: /forms?envelope=<iid> → switch to Envelopes tab + auto-open the sign modal
+  useEffect(() => {
+    if (params?.envelope) {
+      setTab("hr");
+      setActiveHRSignId(String(params.envelope));
+    } else if (params?.tab === "envelopes" || params?.tab === "hr") {
+      setTab("hr");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params?.envelope, params?.tab]);
+
+  // First-load auto-switch: if no explicit tab is requested and the user has pending envelopes,
+  // land them on the Envelopes tab so they don't have to hunt for it.
+  const hasAutoSwitched = React.useRef(false);
+  useEffect(() => {
+    if (hasAutoSwitched.current) return;
+    if (params?.envelope || params?.tab) return;
+    if (!hrIssuances.length) return;
+    const pending = hrIssuances.filter((i: any) => i.status === "pending" || i.status === "read").length;
+    if (pending > 0) {
+      setTab("hr");
+      hasAutoSwitched.current = true;
+    }
+  }, [hrIssuances, params?.envelope, params?.tab]);
 
   const startFill = (tpl: any) => {
     setActive(tpl);
@@ -195,12 +221,18 @@ export default function FormsScreen() {
           onPress={() => setTab("hr")}
           style={[styles.tab, tab === "hr" && styles.tabActive]}
         >
-          <Text style={[styles.tabText, tab === "hr" && styles.tabTextActive]}>
-            HR{(() => {
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Feather name="mail" size={13} color={tab === "hr" ? "#fff" : colors.textSecondary} />
+            <Text style={[styles.tabText, tab === "hr" && styles.tabTextActive]}>Envelopes</Text>
+            {(() => {
               const pend = hrIssuances.filter((i: any) => i.status === "pending" || i.status === "read").length;
-              return pend > 0 ? ` · ${pend} pending` : "";
+              return pend > 0 ? (
+                <View style={{ backgroundColor: colors.alert, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999 }}>
+                  <Text style={{ color: "#fff", fontSize: 10, fontWeight: "800" }}>{pend}</Text>
+                </View>
+              ) : null;
             })()}
-          </Text>
+          </View>
         </TouchableOpacity>
       </View>
 

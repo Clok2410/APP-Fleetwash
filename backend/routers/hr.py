@@ -274,6 +274,19 @@ async def hr_upload_and_issue(body: HRUploadIssueIn, request: Request, current=D
     }
     await db.hr_issuances.insert_one(iss_doc)
 
+    # In-app notification for the staff member (powers the bell on their Home tab)
+    try:
+        from server import notify
+        await notify(
+            user_id=body.user_id,
+            title=f"Envelope to sign: {body.title.strip()}",
+            body=f"{current.get('name') or 'Admin'} sent you a document. Tap to read and sign.",
+            kind="hr_envelope",
+            related_id=iid,
+        )
+    except Exception:
+        pass
+
     # Best-effort push to staff member
     try:
         tok = user.get("expo_push_token")
@@ -287,10 +300,11 @@ async def hr_upload_and_issue(body: HRUploadIssueIn, request: Request, current=D
             )
     except Exception:
         pass
-    # Best-effort email to staff member
+    # Best-effort email to staff member — deep-link straight to the envelope
     try:
         from server import _send_smtp_email
         if user.get("email"):
+            deep_link = f"https://staff-scheduler-152.preview.emergentagent.com/forms?envelope={iid}"
             _send_smtp_email(
                 to_emails=[user["email"]],
                 subject=f"[StaffHub] Envelope to sign: {body.title.strip()}",
@@ -299,8 +313,11 @@ async def hr_upload_and_issue(body: HRUploadIssueIn, request: Request, current=D
                     f"{current.get('name') or 'Admin'} sent you an envelope to sign: "
                     f"{body.title.strip()}\n\n"
                     f"{('Note: ' + body.message) if body.message else ''}\n\n"
-                    f"Open StaffHub and go to the HR tab to read and sign.\n"
-                    f"https://staff-scheduler-152.preview.emergentagent.com"
+                    f"Open this link (you'll need to log in first, then it'll take you straight to the document):\n"
+                    f"{deep_link}\n\n"
+                    f"Or open StaffHub manually and go to:\n"
+                    f"  Forms tab → Envelopes sub-tab\n"
+                    f"  https://staff-scheduler-152.preview.emergentagent.com"
                 ),
             )
     except Exception:

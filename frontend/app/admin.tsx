@@ -862,10 +862,7 @@ export default function AdminScreen() {
         expires_at: envExpiry || null,
         message: envMessage || null,
       });
-      Alert.alert(
-        "Envelope sent",
-        `"${data.template_title}" sent to ${data.user_name}.\nThey'll get an email + push notification. You'll get an email back when they open it, and another with the signed PDF when they sign.`,
-      );
+      // Close the modal + reset state IMMEDIATELY so the alert appears on the cleared screen
       setEnvUploadOpen(false);
       setEnvFile(null);
       setEnvTitle("");
@@ -873,6 +870,10 @@ export default function AdminScreen() {
       setEnvExpiry("");
       setEnvMessage("");
       await loadHrStaff();
+      Alert.alert(
+        "Envelope sent",
+        `"${data.template_title}" sent to ${data.user_name}.\nThey'll get an email + in-app notification. You'll get an email back when they open it, and another with the signed PDF when they sign.`,
+      );
     } catch (e: any) {
       Alert.alert("Send failed", e.response?.data?.detail || "Try again");
     } finally {
