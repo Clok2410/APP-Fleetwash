@@ -164,12 +164,27 @@ export default function ProfileScreen() {
     }
     const effectiveEnd = end || start; // single-day defaults end -> start
     try {
-      await api.post("/holidays/requests", { start_date: start, end_date: effectiveEnd, reason, type });
+      const { data } = await api.post("/holidays/requests", { start_date: start, end_date: effectiveEnd, reason, type });
       setReqOpen(false);
       setStart("");
       setEnd("");
       setReason("");
       await load();
+      // If there are clashes with other staff, show an advisory note
+      const clashes = (data && data.clashes) || [];
+      if (clashes.length > 0) {
+        const summary = clashes
+          .slice(0, 5)
+          .map((c: any) => `• ${c.user_name} (${c.type}, ${c.status === "approved" ? "approved" : "pending"}) ${c.start_date}${c.end_date !== c.start_date ? " → " + c.end_date : ""}`)
+          .join("\n");
+        const more = clashes.length > 5 ? `\n…and ${clashes.length - 5} more` : "";
+        Alert.alert(
+          "Heads up — clash with other staff",
+          `Your request was submitted for admin approval, but the following teammate(s) already have leave booked overlapping these dates:\n\n${summary}${more}`,
+        );
+      } else {
+        Alert.alert("Submitted", "Your leave request has been sent for admin approval.");
+      }
     } catch (e: any) {
       Alert.alert("Error", e.response?.data?.detail || "Failed");
     }

@@ -75,10 +75,17 @@ export default function AdminScreen() {
   }, [params?.openRoster, params?.tab]);
   // A1: Holiday detail drawer
   const [holidayDetail, setHolidayDetail] = useState<any>(null);
+  // Names of staff on leave per date (for calendar tooltip + selected-day panel)
+  const [selectedCalDate, setSelectedCalDate] = useState<string>("");
   const [hdStart, setHdStart] = useState("");
   const [hdEnd, setHdEnd] = useState("");
   const [hdReason, setHdReason] = useState("");
   const [hdType, setHdType] = useState<"annual" | "sick" | "unpaid" | "no_show">("annual");
+
+  // Holiday list filter (click-through summary chips)
+  const [holidayFilter, setHolidayFilter] = useState<"all" | "annual" | "sick" | "unpaid" | "no_show" | "pending">("all");
+  // Hours Sheets list sort (click-through summary cells)
+  const [hoursSort, setHoursSort] = useState<"name" | "total" | "net" | "accrued">("name");
 
   // Admin manual leave entry modal
   const [leaveAddOpen, setLeaveAddOpen] = useState(false);
@@ -1442,6 +1449,7 @@ export default function AdminScreen() {
               <Calendar
                 testID="admin-holiday-calendar"
                 markingType="multi-dot"
+                onDayPress={(d: any) => setSelectedCalDate(d.dateString)}
                 markedDates={(() => {
                   const m: any = {};
                   const palette = ["#10B981", "#F59E0B", "#3B82F6", "#EC4899", "#8B5CF6", "#EF4444"];
@@ -1469,11 +1477,60 @@ export default function AdminScreen() {
                       }
                     } catch {}
                   });
+                  if (selectedCalDate && m[selectedCalDate]) {
+                    m[selectedCalDate] = { ...m[selectedCalDate], selected: true, selectedColor: colors.brand };
+                  } else if (selectedCalDate) {
+                    m[selectedCalDate] = { selected: true, selectedColor: colors.brand };
+                  }
                   return m;
                 })()}
                 theme={{ todayTextColor: colors.brand, arrowColor: colors.primary }}
               />
             </View>
+
+            {/* On-leave-today panel: who's off on the date the admin tapped (or today if none picked) */}
+            {(() => {
+              const targetDate = selectedCalDate || new Date().toISOString().slice(0, 10);
+              const onLeave = holidays.filter((h) => {
+                if (h.status !== "approved" && h.status !== "pending") return false;
+                return targetDate >= h.start_date && targetDate <= h.end_date;
+              });
+              return (
+                <View style={{ marginTop: 8, padding: 10, backgroundColor: colors.surface, borderRadius: radius.md }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <Feather name="users" size={14} color={colors.primary} />
+                    <Text style={{ fontWeight: "700", color: colors.primary }}>
+                      On leave on {targetDate}{!selectedCalDate ? " (today)" : ""}: {onLeave.length}
+                    </Text>
+                    {selectedCalDate && (
+                      <TouchableOpacity onPress={() => setSelectedCalDate("")} style={{ marginLeft: "auto" }}>
+                        <Text style={{ color: colors.brand, fontSize: 12, fontWeight: "600" }}>Reset</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  {onLeave.length === 0 ? (
+                    <Text style={[typography.small, { marginTop: 4 }]}>Nobody on leave that day. Tap any date to inspect.</Text>
+                  ) : (
+                    <View style={{ marginTop: 6, gap: 4 }}>
+                      {onLeave.map((h) => (
+                        <View key={h.id} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                          <View style={{
+                            width: 8, height: 8, borderRadius: 4,
+                            backgroundColor: h.status === "approved" ? colors.success : "#FBBF24",
+                          }} />
+                          <Text style={typography.small}>
+                            <Text style={{ fontWeight: "700" }}>{h.user_name}</Text>
+                            {" · "}{h.type === "no_show" ? "no-show" : h.type}{" · "}{h.status}
+                            {h.start_date !== h.end_date ? ` (${h.start_date} → ${h.end_date})` : ""}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              );
+            })()}
+
             <View style={{ flexDirection: "row", alignItems: "center", marginTop: 6, gap: 12 }}>
               <View style={{ flexDirection: "row", alignItems: "center" }}>
                 <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#10B981", marginRight: 4 }} />
@@ -1486,10 +1543,64 @@ export default function AdminScreen() {
             </View>
 
             <Text style={[typography.label, { marginTop: 16, marginBottom: 6 }]}>Requests</Text>
-            {holidays.length === 0 ? (
-              <Text style={[typography.small, { color: colors.textMuted }]}>No requests yet.</Text>
-            ) : (
-              holidays.map((h) => (
+
+            {/* Click-through filter pills — counts itemise each category */}
+            {(() => {
+              const counts = {
+                all: holidays.length,
+                pending: holidays.filter((h) => h.status === "pending").length,
+                annual: holidays.filter((h) => h.type === "annual").length,
+                sick: holidays.filter((h) => h.type === "sick").length,
+                unpaid: holidays.filter((h) => h.type === "unpaid").length,
+                no_show: holidays.filter((h) => h.type === "no_show").length,
+              };
+              const pills: { key: typeof holidayFilter; label: string; count: number; color: string }[] = [
+                { key: "all", label: "All", count: counts.all, color: colors.primary as any },
+                { key: "pending", label: "Pending", count: counts.pending, color: colors.brand },
+                { key: "annual", label: "Annual", count: counts.annual, color: colors.success },
+                { key: "sick", label: "Sick", count: counts.sick, color: "#F59E0B" },
+                { key: "unpaid", label: "Unpaid", count: counts.unpaid, color: colors.textMuted as any },
+                { key: "no_show", label: "No-show", count: counts.no_show, color: colors.alert },
+              ];
+              return (
+                <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+                  {pills.map((p) => (
+                    <TouchableOpacity
+                      key={p.key}
+                      testID={`hol-filter-${p.key}`}
+                      onPress={() => setHolidayFilter(p.key)}
+                      style={[
+                        styles.typeChip,
+                        holidayFilter === p.key && { backgroundColor: p.color, borderColor: p.color },
+                      ]}
+                    >
+                      <Text style={{
+                        color: holidayFilter === p.key ? "#fff" : colors.primary,
+                        fontWeight: "700",
+                        fontSize: 12,
+                      }}>
+                        {p.label} · {p.count}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              );
+            })()}
+
+            {(() => {
+              const filtered = holidays.filter((h) => {
+                if (holidayFilter === "all") return true;
+                if (holidayFilter === "pending") return h.status === "pending";
+                return h.type === holidayFilter;
+              });
+              if (filtered.length === 0) {
+                return (
+                  <Text style={[typography.small, { color: colors.textMuted }]}>
+                    {holidays.length === 0 ? "No requests yet." : "No requests match this filter."}
+                  </Text>
+                );
+              }
+              return filtered.map((h) => (
                 <TouchableOpacity
                   key={h.id}
                   style={styles.card}
@@ -1500,11 +1611,18 @@ export default function AdminScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontWeight: "700", color: colors.primary }}>{h.user_name}</Text>
                     <Text style={typography.small}>
-                      {h.start_date} → {h.end_date} · {h.type}
+                      {h.start_date} → {h.end_date} · {h.type === "no_show" ? "no-show" : h.type}
                       {h.days ? ` · ${h.days}d` : ""}
                     </Text>
                     {h.reason ? <Text style={typography.small}>{h.reason}</Text> : null}
                     <Text style={[typography.small, { marginTop: 4, fontWeight: "700" }]}>{h.status?.toUpperCase()}</Text>
+                    {h.clashes_at_submission && h.clashes_at_submission.length > 0 && (
+                      <View style={{ marginTop: 4, padding: 6, backgroundColor: "#FEF3C7", borderRadius: 6, borderWidth: 1, borderColor: "#F59E0B" }}>
+                        <Text style={{ fontSize: 11, fontWeight: "700", color: "#92400E" }}>
+                          ⚠ Clashed at submission with {h.clashes_at_submission.length} other request{h.clashes_at_submission.length === 1 ? "" : "s"}: {h.clashes_at_submission.slice(0, 3).map((c: any) => c.user_name).join(", ")}{h.clashes_at_submission.length > 3 ? "…" : ""}
+                        </Text>
+                      </View>
+                    )}
                     {h.status === "cancelled" && h.cancelled_by ? (
                       <Text style={[typography.small, { color: colors.textMuted, fontSize: 11 }]}>
                         by {h.cancelled_by === "admin" ? h.cancelled_by_name || "admin" : "staff"}
@@ -1536,8 +1654,8 @@ export default function AdminScreen() {
                     )}
                   </View>
                 </TouchableOpacity>
-              ))
-            )}
+              ));
+            })()}
           </>
         )}
 
@@ -1769,22 +1887,58 @@ export default function AdminScreen() {
             {hoursData && hoursData.rows && hoursData.rows.length > 0 && (
               <>
                 <View style={hsStyles.summaryRow}>
-                  <View style={hsStyles.summaryCell}>
-                    <Text style={typography.label}>STAFF</Text>
-                    <Text style={[typography.h2, { marginTop: 2 }]}>{hoursData.totals.staff_count}</Text>
-                  </View>
-                  <View style={hsStyles.summaryCell}>
-                    <Text style={typography.label}>TOTAL HOURS</Text>
-                    <Text style={[typography.h2, { marginTop: 2 }]}>{hoursData.totals.total_hours}</Text>
-                  </View>
-                  <View style={hsStyles.summaryCell}>
-                    <Text style={typography.label}>NET (AFTER BREAKS)</Text>
-                    <Text style={[typography.h2, { marginTop: 2 }]}>{hoursData.totals.net_hours}</Text>
-                  </View>
-                  <View style={hsStyles.summaryCell}>
-                    <Text style={typography.label}>HOLIDAY ACCRUED</Text>
-                    <Text style={[typography.h2, { marginTop: 2 }]}>{hoursData.totals.accrued_holiday_hours}</Text>
-                  </View>
+                  <TouchableOpacity
+                    testID="hours-sort-name"
+                    onPress={() => setHoursSort("name")}
+                    style={[hsStyles.summaryCell, hoursSort === "name" && { backgroundColor: colors.primary }]}
+                  >
+                    <Text style={[typography.label, hoursSort === "name" && { color: "#fff" }]}>STAFF</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }, hoursSort === "name" && { color: "#fff" }]}>
+                      {hoursData.totals.staff_count}
+                    </Text>
+                    <Text style={[typography.small, { marginTop: 2, fontSize: 9 }, hoursSort === "name" && { color: "#fff" }]}>
+                      tap to sort A→Z
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    testID="hours-sort-total"
+                    onPress={() => setHoursSort("total")}
+                    style={[hsStyles.summaryCell, hoursSort === "total" && { backgroundColor: colors.primary }]}
+                  >
+                    <Text style={[typography.label, hoursSort === "total" && { color: "#fff" }]}>TOTAL HOURS</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }, hoursSort === "total" && { color: "#fff" }]}>
+                      {hoursData.totals.total_hours}
+                    </Text>
+                    <Text style={[typography.small, { marginTop: 2, fontSize: 9 }, hoursSort === "total" && { color: "#fff" }]}>
+                      tap to sort high→low
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    testID="hours-sort-net"
+                    onPress={() => setHoursSort("net")}
+                    style={[hsStyles.summaryCell, hoursSort === "net" && { backgroundColor: colors.primary }]}
+                  >
+                    <Text style={[typography.label, hoursSort === "net" && { color: "#fff" }]}>NET (AFTER BREAKS)</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }, hoursSort === "net" && { color: "#fff" }]}>
+                      {hoursData.totals.net_hours}
+                    </Text>
+                    <Text style={[typography.small, { marginTop: 2, fontSize: 9 }, hoursSort === "net" && { color: "#fff" }]}>
+                      tap to sort high→low
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    testID="hours-sort-accrued"
+                    onPress={() => setHoursSort("accrued")}
+                    style={[hsStyles.summaryCell, hoursSort === "accrued" && { backgroundColor: colors.primary }]}
+                  >
+                    <Text style={[typography.label, hoursSort === "accrued" && { color: "#fff" }]}>HOLIDAY ACCRUED</Text>
+                    <Text style={[typography.h2, { marginTop: 2 }, hoursSort === "accrued" && { color: "#fff" }]}>
+                      {hoursData.totals.accrued_holiday_hours}
+                    </Text>
+                    <Text style={[typography.small, { marginTop: 2, fontSize: 9 }, hoursSort === "accrued" && { color: "#fff" }]}>
+                      tap to sort high→low
+                    </Text>
+                  </TouchableOpacity>
                 </View>
 
                 <View style={hsStyles.tableHeader}>
@@ -1795,7 +1949,14 @@ export default function AdminScreen() {
                   <Text style={hsStyles.thTotal}>Total</Text>
                 </View>
 
-                {hoursData.rows.map((r: any) => (
+                {(() => {
+                  const rows = [...hoursData.rows];
+                  if (hoursSort === "total") rows.sort((a: any, b: any) => b.total_hours - a.total_hours);
+                  else if (hoursSort === "net") rows.sort((a: any, b: any) => b.net_hours - a.net_hours);
+                  else if (hoursSort === "accrued") rows.sort((a: any, b: any) => b.accrued_holiday_hours - a.accrued_holiday_hours);
+                  else rows.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || ""));
+                  return rows;
+                })().map((r: any) => (
                   <TouchableOpacity
                     key={r.user_id}
                     testID={`hours-row-${r.user_id}`}

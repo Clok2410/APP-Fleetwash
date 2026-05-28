@@ -159,15 +159,41 @@ async def create_holiday_request(body: HolidayRequestIn, current=Depends(get_cur
     if body.type not in ("annual", "sick", "unpaid", "no_show"):
         raise HTTPException(status_code=400, detail="type must be annual, sick, unpaid, or no_show")
     try:
+        _validate_iso_date(body.start_date, "start_date")
+        _validate_iso_date(body.end_date, "end_date")
         s = datetime.fromisoformat(body.start_date).date()
         e = datetime.fromisoformat(body.end_date).date()
+        if e < s:
+            raise HTTPException(status_code=400, detail="end_date cannot be before start_date")
         days = (e - s).days + 1
+    except HTTPException:
+        raise
     except Exception:
-        days = 0
+        raise HTTPException(status_code=400, detail="Invalid date format (YYYY-MM-DD)")
+
+    # === Clash detection: any approved or pending leave from OTHER staff that overlaps ===
+    clashes_docs = await db.holiday_requests.find({
+        "user_id": {"$ne": current["id"]},
+        "status": {"$in": ["approved", "pending"]},
+        "type": {"$ne": "no_show"},  # no-shows don't matter for clash advisory
+        "start_date": {"$lte": body.end_date},
+        "end_date": {"$gte": body.start_date},
+    }).to_list(50)
+    clashes = [
+        {
+            "user_name": c.get("user_name"),
+            "type": c.get("type"),
+            "status": c.get("status"),
+            "start_date": c.get("start_date"),
+            "end_date": c.get("end_date"),
+        }
+        for c in clashes_docs
+    ]
+
     req = {
         "id": str(uuid.uuid4()),
         "user_id": current["id"],
-        "user_name": current["name"],
+        "user_name": current.get("name"),
         "start_date": body.start_date,
         "end_date": body.end_date,
         "reason": body.reason,
@@ -175,9 +201,21 @@ async def create_holiday_request(body: HolidayRequestIn, current=Depends(get_cur
         "days": days,
         "status": "pending",
         "created_at": now_utc(),
+        "clashes_at_submission": clashes,  # store snapshot so admin can see it on the request
     }
     await db.holiday_requests.insert_one(req)
-    return serialize(req)
+    try:
+        await create_admin_notifications(
+            "holiday_request",
+            "New holiday request",
+            f"{current.get('name')} requested {body.start_date} → {body.end_date}",
+            req["id"],
+        )
+    except Exception:
+        pass
+    out = serialize(req)
+    out["clashes"] = clashes  # echo back to UI so the staff member sees the warning
+    return out
 
 
 @router.get("/holidays/requests")
