@@ -3444,6 +3444,73 @@ async def on_startup():
                 logger.exception("HR expiry job failed")
 
         scheduler.add_job(hr_expiry_job, CronTrigger(hour=6, minute=0))
+
+        # 3-day stagnant envelope reminder — runs daily at 07:00 UTC.
+        # Sends ONE reminder email per envelope after 3 days unsigned (gated by audit marker).
+        async def hr_stagnant_reminder_job():
+            try:
+                from datetime import timedelta as _td
+                cutoff = datetime.utcnow() - _td(days=3)
+                rem_cursor = db.hr_issuances.find({"status": {"$in": ["pending", "read"]}})
+                n_sent = 0
+                async for d in rem_cursor:
+                    # Already nudged once? skip.
+                    if any((e.get("kind") == "reminder_3d_stagnant") for e in (d.get("audit") or [])):
+                        continue
+                    issued_at = d.get("issued_at")
+                    try:
+                        if isinstance(issued_at, str):
+                            issued_dt = datetime.fromisoformat(issued_at.replace("Z", "+00:00")).replace(tzinfo=None)
+                        else:
+                            issued_dt = issued_at.replace(tzinfo=None) if hasattr(issued_at, "replace") else issued_at
+                    except Exception:
+                        continue
+                    if not issued_dt or issued_dt > cutoff:
+                        continue
+                    user = await db.users.find_one({"id": d.get("user_id")})
+                    if not user or not user.get("email"):
+                        continue
+                    tpl = await db.pdf_form_templates.find_one({"id": d.get("template_id")})
+                    if not tpl or not tpl.get("pdf_base64"):
+                        continue
+                    try:
+                        import base64 as _b64
+                        pdf_bytes = _b64.b64decode(tpl["pdf_base64"])
+                    except Exception:
+                        continue
+                    title = d.get("template_title") or tpl.get("title") or "Document"
+                    try:
+                        from routers.hr import _deliver_envelope_email  # type: ignore
+                        await _deliver_envelope_email(
+                            user=user,
+                            title=title,
+                            message=d.get("message") or None,
+                            iid=d["id"],
+                            pdf_bytes=pdf_bytes,
+                            sender_name=d.get("issued_by_name") or "Admin",
+                            resend=True,
+                        )
+                    except Exception:
+                        logger.exception("Failed to send 3-day reminder email")
+                        continue
+                    await db.hr_issuances.update_one(
+                        {"id": d["id"]},
+                        {"$push": {"audit": {
+                            "kind": "reminder_3d_stagnant",
+                            "at": now_utc(),
+                            "actor_id": None,
+                            "actor_name": "system",
+                            "ip": "",
+                            "user_agent": "",
+                        }}},
+                    )
+                    n_sent += 1
+                if n_sent:
+                    logger.info(f"HR 3-day reminder: emailed {n_sent} stagnant envelope(s)")
+            except Exception:
+                logger.exception("HR 3-day reminder job failed")
+
+        scheduler.add_job(hr_stagnant_reminder_job, CronTrigger(hour=7, minute=0))
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info("Scheduler started: weekly digest (Mon 09:00 UTC) + HR expiry sweep (daily 06:00 UTC)")

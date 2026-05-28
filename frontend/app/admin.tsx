@@ -189,10 +189,13 @@ export default function AdminScreen() {
   const [envUploadOpen, setEnvUploadOpen] = useState(false);
   const [envFile, setEnvFile] = useState<{ name: string; base64: string } | null>(null);
   const [envTitle, setEnvTitle] = useState("");
-  const [envUserId, setEnvUserId] = useState<string>("");
+  const [envUserIds, setEnvUserIds] = useState<string[]>([]);
+  const [envUserFilter, setEnvUserFilter] = useState("");
   const [envExpiry, setEnvExpiry] = useState<string>("");
   const [envMessage, setEnvMessage] = useState<string>("");
   const [envBusy, setEnvBusy] = useState(false);
+  // Envelopes rollup summary
+  const [envSummary, setEnvSummary] = useState<any>(null);
   // Hours Sheets state
   const [hoursWeek, setHoursWeek] = useState<string>(""); // YYYY-MM-DD Monday; empty=current
   const [hoursData, setHoursData] = useState<any>(null);
@@ -390,7 +393,10 @@ export default function AdminScreen() {
     }
   }, []);
   useEffect(() => {
-    if (tab === "hr") loadHrStaff();
+    if (tab === "hr") {
+      loadHrStaff();
+      loadEnvSummary();
+    }
   }, [tab, loadHrStaff]);
 
   // Hours Sheets loader
@@ -940,12 +946,12 @@ export default function AdminScreen() {
   const sendEnvelope = async () => {
     if (!envFile) return Alert.alert("Pick a PDF first");
     if (!envTitle.trim()) return Alert.alert("Title required");
-    if (!envUserId) return Alert.alert("Pick a staff member to send to");
+    if (envUserIds.length === 0) return Alert.alert("Pick at least one staff member to send to");
     setEnvBusy(true);
     try {
       const { data } = await api.post("/hr/envelopes/upload-and-issue", {
         title: envTitle.trim(),
-        user_id: envUserId,
+        user_ids: envUserIds,
         pdf_base64: envFile.base64,
         expires_at: envExpiry || null,
         message: envMessage || null,
@@ -954,18 +960,33 @@ export default function AdminScreen() {
       setEnvUploadOpen(false);
       setEnvFile(null);
       setEnvTitle("");
-      setEnvUserId("");
+      setEnvUserIds([]);
+      setEnvUserFilter("");
       setEnvExpiry("");
       setEnvMessage("");
       await loadHrStaff();
+      await loadEnvSummary();
+      const sentCount = data?.count ?? 1;
+      const sentTo = data?.issuances
+        ? data.issuances.map((i: any) => i.user_name).join(", ")
+        : data?.user_name || "staff member";
       Alert.alert(
-        "Envelope sent",
-        `"${data.template_title}" sent to ${data.user_name}.\nThey'll get an email + in-app notification. You'll get an email back when they open it, and another with the signed PDF when they sign.`,
+        `Envelope sent to ${sentCount} staff member${sentCount === 1 ? "" : "s"}`,
+        `"${envTitle.trim() || data?.template_title}" sent to ${sentTo}.\nThey'll get an email + in-app notification. You'll get an email back when they open it, and another with the signed PDF when they sign.`,
       );
     } catch (e: any) {
       Alert.alert("Send failed", e.response?.data?.detail || "Try again");
     } finally {
       setEnvBusy(false);
+    }
+  };
+
+  const loadEnvSummary = async () => {
+    try {
+      const { data } = await api.get("/hr/envelopes/summary");
+      setEnvSummary(data);
+    } catch (_e) {
+      setEnvSummary(null);
     }
   };
 
@@ -1445,48 +1466,95 @@ export default function AdminScreen() {
 
             {/* Team Holiday Calendar */}
             <Text style={[typography.label, { marginBottom: 6 }]}>Team Holiday Calendar</Text>
-            <View style={{ borderRadius: radius.lg, overflow: "hidden", borderWidth: 1, borderColor: colors.border, backgroundColor: "#fff" }}>
-              <Calendar
-                testID="admin-holiday-calendar"
-                markingType="multi-dot"
-                onDayPress={(d: any) => setSelectedCalDate(d.dateString)}
-                markedDates={(() => {
-                  const m: any = {};
-                  const palette = ["#10B981", "#F59E0B", "#3B82F6", "#EC4899", "#8B5CF6", "#EF4444"];
-                  const userColor: Record<string, string> = {};
-                  let idx = 0;
-                  holidays.forEach((h) => {
-                    if (h.status === "rejected") return;
-                    if (!userColor[h.user_id]) {
-                      userColor[h.user_id] = palette[idx % palette.length];
-                      idx += 1;
-                    }
-                    const c = userColor[h.user_id];
-                    try {
-                      const sD = new Date(h.start_date);
-                      const eD = new Date(h.end_date);
-                      const cur = new Date(sD);
-                      while (cur <= eD) {
-                        const ds = cur.toISOString().slice(0, 10);
-                        if (!m[ds]) m[ds] = { dots: [] };
-                        m[ds].dots.push({
-                          color: h.status === "approved" ? c : "#FBBF24",
-                          key: `${h.id}-${ds}`,
-                        });
-                        cur.setDate(cur.getDate() + 1);
-                      }
-                    } catch {}
-                  });
-                  if (selectedCalDate && m[selectedCalDate]) {
-                    m[selectedCalDate] = { ...m[selectedCalDate], selected: true, selectedColor: colors.brand };
-                  } else if (selectedCalDate) {
-                    m[selectedCalDate] = { selected: true, selectedColor: colors.brand };
+            {(() => {
+              // Stable per-staff color assignment used by BOTH the calendar dots and the legend below
+              const palette = ["#10B981", "#F59E0B", "#3B82F6", "#EC4899", "#8B5CF6", "#EF4444", "#14B8A6", "#F97316", "#6366F1", "#84CC16"];
+              const staffColorMap: Record<string, { color: string; name: string }> = {};
+              let idx = 0;
+              holidays
+                .filter((h) => h.status !== "rejected")
+                .sort((a: any, b: any) => (a.user_name || "").localeCompare(b.user_name || ""))
+                .forEach((h) => {
+                  if (!staffColorMap[h.user_id]) {
+                    staffColorMap[h.user_id] = { color: palette[idx % palette.length], name: h.user_name || "Unknown" };
+                    idx += 1;
                   }
-                  return m;
-                })()}
-                theme={{ todayTextColor: colors.brand, arrowColor: colors.primary }}
-              />
-            </View>
+                });
+              const legendEntries = Object.entries(staffColorMap).sort(([, a], [, b]) =>
+                a.name.localeCompare(b.name),
+              );
+              return (
+                <>
+                  <View style={{ borderRadius: radius.lg, overflow: "hidden", borderWidth: 1, borderColor: colors.border, backgroundColor: "#fff" }}>
+                    <Calendar
+                      testID="admin-holiday-calendar"
+                      markingType="multi-dot"
+                      onDayPress={(d: any) => setSelectedCalDate(d.dateString)}
+                      markedDates={(() => {
+                        const m: any = {};
+                        holidays.forEach((h) => {
+                          if (h.status === "rejected") return;
+                          const entry = staffColorMap[h.user_id];
+                          if (!entry) return;
+                          const c = entry.color;
+                          try {
+                            const sD = new Date(h.start_date);
+                            const eD = new Date(h.end_date);
+                            const cur = new Date(sD);
+                            while (cur <= eD) {
+                              const ds = cur.toISOString().slice(0, 10);
+                              if (!m[ds]) m[ds] = { dots: [] };
+                              m[ds].dots.push({
+                                color: h.status === "approved" ? c : "#FBBF24",
+                                key: `${h.id}-${ds}`,
+                              });
+                              cur.setDate(cur.getDate() + 1);
+                            }
+                          } catch {}
+                        });
+                        if (selectedCalDate && m[selectedCalDate]) {
+                          m[selectedCalDate] = { ...m[selectedCalDate], selected: true, selectedColor: colors.brand };
+                        } else if (selectedCalDate) {
+                          m[selectedCalDate] = { selected: true, selectedColor: colors.brand };
+                        }
+                        return m;
+                      })()}
+                      theme={{ todayTextColor: colors.brand, arrowColor: colors.primary }}
+                    />
+                  </View>
+
+                  {/* Calendar legend — per-staff color key + status indicators */}
+                  {legendEntries.length > 0 && (
+                    <View
+                      testID="holiday-calendar-legend"
+                      style={{ marginTop: 8, padding: 10, backgroundColor: colors.surface, borderRadius: radius.md }}
+                    >
+                      <Text style={[typography.small, { fontWeight: "700", color: colors.primary, marginBottom: 6 }]}>
+                        Staff colour key
+                      </Text>
+                      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                        {legendEntries.map(([uid, info]) => (
+                          <View
+                            key={uid}
+                            testID={`legend-staff-${uid}`}
+                            style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999, backgroundColor: "#fff", borderWidth: 1, borderColor: colors.border }}
+                          >
+                            <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: info.color, marginRight: 6 }} />
+                            <Text style={{ fontSize: 12, color: colors.primary, fontWeight: "600" }}>{info.name}</Text>
+                          </View>
+                        ))}
+                        <View
+                          style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999, backgroundColor: "#fff", borderWidth: 1, borderColor: colors.border }}
+                        >
+                          <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: "#FBBF24", marginRight: 6 }} />
+                          <Text style={{ fontSize: 12, color: colors.primary, fontWeight: "600" }}>Pending (any staff)</Text>
+                        </View>
+                      </View>
+                    </View>
+                  )}
+                </>
+              );
+            })()}
 
             {/* On-leave-today panel: who's off on the date the admin tapped (or today if none picked) */}
             {(() => {
@@ -1530,17 +1598,6 @@ export default function AdminScreen() {
                 </View>
               );
             })()}
-
-            <View style={{ flexDirection: "row", alignItems: "center", marginTop: 6, gap: 12 }}>
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#10B981", marginRight: 4 }} />
-                <Text style={typography.small}>Approved</Text>
-              </View>
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#FBBF24", marginRight: 4 }} />
-                <Text style={typography.small}>Pending</Text>
-              </View>
-            </View>
 
             <Text style={[typography.label, { marginTop: 16, marginBottom: 6 }]}>Requests</Text>
 
@@ -2740,9 +2797,27 @@ export default function AdminScreen() {
           <>
             <Text style={[typography.label, { marginBottom: 4 }]}>Envelopes — DocuSign-style signing</Text>
             <Text style={[typography.small, { marginBottom: 8 }]}>
-              Upload any PDF (contract, policy, SOP, HR doc) and send it to a staff member to read + sign.
+              Upload any PDF (contract, policy, SOP, HR doc) and send it to one or many staff members to read + sign.
               Read receipts and signed-PDF emails are sent to fwash.phone3@gmail.com automatically.
             </Text>
+
+            {envSummary && envSummary.total > 0 && (
+              <View
+                testID="env-summary-badges"
+                style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 10 }}
+              >
+                <RollupBadge label="Outstanding" value={envSummary.outstanding} color={colors.brand} testID="env-rollup-outstanding" />
+                <RollupBadge label="Pending" value={envSummary.counts?.pending || 0} color="#3B82F6" testID="env-rollup-pending" />
+                <RollupBadge label="Read" value={envSummary.counts?.read || 0} color="#F59E0B" testID="env-rollup-read" />
+                <RollupBadge label="Signed" value={envSummary.counts?.signed || 0} color="#0F766E" testID="env-rollup-signed" />
+                {envSummary.stagnant > 0 && (
+                  <RollupBadge label=">3d stagnant" value={envSummary.stagnant} color={colors.alert} testID="env-rollup-stagnant" />
+                )}
+                {envSummary.overdue > 0 && (
+                  <RollupBadge label="Overdue" value={envSummary.overdue} color={colors.alert} testID="env-rollup-overdue" />
+                )}
+              </View>
+            )}
 
             <TouchableOpacity
               testID="open-envelope-upload"
@@ -4096,36 +4171,108 @@ export default function AdminScreen() {
                 placeholderTextColor={colors.textMuted}
               />
 
-              {/* Step 3 — recipient */}
-              <Text style={[typography.label, { marginTop: 14 }]}>Send to *</Text>
-              <ScrollView style={{ maxHeight: 200, marginTop: 6 }}>
-                {users
+              {/* Step 3 — recipient(s) — bulk multi-select with filter */}
+              {(() => {
+                const staffList = users
                   .filter((u: any) => u.role === "staff" && u.active !== false)
-                  .sort((a: any, b: any) => (a.name || "").localeCompare(b.name || ""))
-                  .map((u: any) => (
-                    <TouchableOpacity
-                      key={u.id}
-                      testID={`env-pick-user-${u.id}`}
-                      onPress={() => setEnvUserId(u.id)}
-                      style={[
-                        styles.userRow,
-                        envUserId === u.id && styles.userRowActive,
-                      ]}
-                    >
-                      <Text style={{ fontWeight: "700", color: envUserId === u.id ? "#fff" : colors.primary }}>
-                        {u.name}
+                  .sort((a: any, b: any) => (a.name || "").localeCompare(b.name || ""));
+                const filterLower = envUserFilter.trim().toLowerCase();
+                const visible = filterLower
+                  ? staffList.filter(
+                      (u: any) =>
+                        (u.name || "").toLowerCase().includes(filterLower) ||
+                        (u.email || "").toLowerCase().includes(filterLower),
+                    )
+                  : staffList;
+                const visibleIds = visible.map((u: any) => u.id);
+                const allSelectedVisible =
+                  visibleIds.length > 0 && visibleIds.every((id: string) => envUserIds.includes(id));
+                const toggleSelectAll = () => {
+                  if (allSelectedVisible) {
+                    setEnvUserIds(envUserIds.filter((id) => !visibleIds.includes(id)));
+                  } else {
+                    const next = new Set([...envUserIds, ...visibleIds]);
+                    setEnvUserIds(Array.from(next));
+                  }
+                };
+                return (
+                  <>
+                    <View style={{ flexDirection: "row", alignItems: "center", marginTop: 14 }}>
+                      <Text style={[typography.label, { flex: 1 }]}>
+                        Send to * {envUserIds.length > 0 ? `(${envUserIds.length} selected)` : ""}
                       </Text>
-                      <Text style={{ fontSize: 11, color: envUserId === u.id ? "#fff" : colors.textMuted }}>
-                        {u.email}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                {users.filter((u: any) => u.role === "staff").length === 0 && (
-                  <Text style={[typography.small, { textAlign: "center", padding: 16, color: colors.textMuted }]}>
-                    No staff users yet. Add them in the Employees tab first.
-                  </Text>
-                )}
-              </ScrollView>
+                      {staffList.length > 0 && (
+                        <TouchableOpacity
+                          testID="env-select-all"
+                          onPress={toggleSelectAll}
+                          style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, backgroundColor: colors.brandSoft }}
+                        >
+                          <Text style={{ color: colors.brand, fontWeight: "700", fontSize: 12 }}>
+                            {allSelectedVisible ? "Clear all" : "Select all"}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                    <TextInput
+                      testID="env-filter"
+                      style={styles.input}
+                      value={envUserFilter}
+                      onChangeText={setEnvUserFilter}
+                      placeholder="Filter by name or email…"
+                      placeholderTextColor={colors.textMuted}
+                      autoCapitalize="none"
+                    />
+                    <ScrollView style={{ maxHeight: 200, marginTop: 6 }}>
+                      {visible.map((u: any) => {
+                        const checked = envUserIds.includes(u.id);
+                        return (
+                          <TouchableOpacity
+                            key={u.id}
+                            testID={`env-pick-user-${u.id}`}
+                            onPress={() =>
+                              setEnvUserIds(
+                                checked
+                                  ? envUserIds.filter((x) => x !== u.id)
+                                  : [...envUserIds, u.id],
+                              )
+                            }
+                            style={[
+                              styles.userRow,
+                              checked && styles.userRowActive,
+                              { flexDirection: "row", alignItems: "center" },
+                            ]}
+                          >
+                            <Feather
+                              name={checked ? "check-square" : "square"}
+                              size={16}
+                              color={checked ? "#fff" : colors.textMuted}
+                              style={{ marginRight: 8 }}
+                            />
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ fontWeight: "700", color: checked ? "#fff" : colors.primary }}>
+                                {u.name}
+                              </Text>
+                              <Text style={{ fontSize: 11, color: checked ? "#fff" : colors.textMuted }}>
+                                {u.email}
+                              </Text>
+                            </View>
+                          </TouchableOpacity>
+                        );
+                      })}
+                      {staffList.length === 0 && (
+                        <Text style={[typography.small, { textAlign: "center", padding: 16, color: colors.textMuted }]}>
+                          No staff users yet. Add them in the Employees tab first.
+                        </Text>
+                      )}
+                      {staffList.length > 0 && visible.length === 0 && (
+                        <Text style={[typography.small, { textAlign: "center", padding: 16, color: colors.textMuted }]}>
+                          No staff match "{envUserFilter}".
+                        </Text>
+                      )}
+                    </ScrollView>
+                  </>
+                );
+              })()}
 
               {/* Step 4 — expiry & message */}
               <Text style={[typography.label, { marginTop: 14 }]}>Expiry date (optional, YYYY-MM-DD)</Text>
@@ -4307,6 +4454,39 @@ function DeskMetric({
           {value}
         </Text>
       </View>
+    </View>
+  );
+}
+
+function RollupBadge({
+  label,
+  value,
+  color,
+  testID,
+}: {
+  label: string;
+  value: number;
+  color: string;
+  testID?: string;
+}) {
+  return (
+    <View
+      testID={testID}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 999,
+        backgroundColor: `${color}18`,
+        borderWidth: 1,
+        borderColor: `${color}44`,
+        gap: 6,
+      }}
+    >
+      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} />
+      <Text style={{ color, fontWeight: "800", fontSize: 12 }}>{value}</Text>
+      <Text style={{ color, fontSize: 11, fontWeight: "600" }}>{label}</Text>
     </View>
   );
 }

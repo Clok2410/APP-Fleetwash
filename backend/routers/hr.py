@@ -207,57 +207,77 @@ async def hr_issue(body: HRIssueIn, request: Request, current=Depends(require_ad
     return serialize(doc)
 
 
-@router.post("/hr/envelopes/upload-and-issue")
-async def hr_upload_and_issue(body: HRUploadIssueIn, request: Request, current=Depends(require_admin)):
-    """One-shot DocuSign-style flow: upload a PDF + create a hidden template + issue it to a staff
-    member in a single call. Auto-issues so the staff member gets the envelope immediately.
+async def _deliver_envelope_email(user: Dict[str, Any], title: str, message: Optional[str], iid: str, pdf_bytes: bytes, sender_name: str, *, resend: bool = False) -> None:
+    """Send the envelope notification email with the PDF attached.
 
-    Stores the PDF as a `pdf_form_templates` row marked `category='hr_envelope'` so it doesn't
-    pollute the staff-facing PDF Forms list while still being signable through the existing flow."""
-    if not body.title or not body.title.strip():
-        raise HTTPException(status_code=400, detail="Title required")
-    user = await db.users.find_one({"id": body.user_id})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    _validate_iso_date(body.expires_at, "expires_at")
+    `resend=True` flips the subject/body wording to make it clear this is a reminder/resend."""
     try:
-        pdf_bytes = base64.b64decode(body.pdf_base64)
+        from server import _send_smtp_email
+        if not user.get("email"):
+            return
+        deep_link = f"https://staff-scheduler-152.preview.emergentagent.com/forms?envelope={iid}"
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)[:60]
+        attach_name = f"{safe}.pdf"
+        if resend:
+            subject = f"[StaffHub] Reminder — please sign: {title}"
+            opening = (
+                f"Hi {user.get('name') or ''},\n\n"
+                f"This is a reminder that {sender_name} asked you to sign the following document: "
+                f"{title}\n\n"
+                f"The full document is attached to this email for your records.\n\n"
+            )
+        else:
+            subject = f"[StaffHub] Envelope to sign: {title}"
+            opening = (
+                f"Hi {user.get('name') or ''},\n\n"
+                f"{sender_name} sent you an envelope to sign: {title}\n\n"
+                f"The full document is attached to this email for your records.\n\n"
+            )
+        body_text = (
+            opening
+            + f"{('Note: ' + message) if message else ''}\n\n"
+            + "To sign electronically, open this link (log in first, it'll take you straight to the document):\n"
+            + f"{deep_link}\n\n"
+            + "Or open StaffHub manually and go to:\n"
+            + "  Forms tab → Envelopes sub-tab\n"
+            + "  https://staff-scheduler-152.preview.emergentagent.com"
+        )
+        _send_smtp_email(
+            to_emails=[user["email"]],
+            subject=subject,
+            body_text=body_text,
+            attachment_bytes=pdf_bytes,
+            attachment_filename=attach_name,
+        )
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid PDF base64")
-    if not pdf_bytes.startswith(b"%PDF"):
-        raise HTTPException(status_code=400, detail="Not a valid PDF")
+        pass
 
-    # Create the hidden template row
-    tpl_id = str(uuid.uuid4())
-    tpl_doc = {
-        "id": tpl_id,
-        "title": body.title.strip(),
-        "category": "hr_envelope",  # hidden from staff PDF Forms tab
-        "pdf_base64": body.pdf_base64,
-        "size": len(pdf_bytes),
-        "fields": [],
-        "field_count": 0,
-        "assigned_user_ids": [body.user_id],
-        "created_by": current["id"],
-        "created_by_name": current.get("name"),
-        "created_at": now_utc(),
-    }
-    await db.pdf_form_templates.insert_one(tpl_doc)
 
-    # Issue immediately
+async def _create_envelope_for_user(
+    *,
+    user: Dict[str, Any],
+    template_id: str,
+    title: str,
+    expires_at: Optional[str],
+    message: Optional[str],
+    current: Dict[str, Any],
+    request: Request,
+    pdf_bytes: bytes,
+) -> Dict[str, Any]:
+    """Create a single issuance + notify the staff member. Returns the serialised doc."""
     iid = str(uuid.uuid4())
     iss_doc = {
         "id": iid,
-        "template_id": tpl_id,
-        "template_title": body.title.strip(),
-        "user_id": body.user_id,
+        "template_id": template_id,
+        "template_title": title,
+        "user_id": user["id"],
         "user_name": user.get("name") or "",
         "user_email": user.get("email") or "",
         "issued_by": current["id"],
         "issued_by_name": current.get("name") or "",
         "issued_at": now_utc(),
-        "expires_at": body.expires_at or None,
-        "message": body.message or "",
+        "expires_at": expires_at or None,
+        "message": message or "",
         "status": "pending",
         "read_at": None,
         "signed_at": None,
@@ -269,18 +289,18 @@ async def hr_upload_and_issue(body: HRUploadIssueIn, request: Request, current=D
                 current["id"],
                 current.get("name"),
                 request,
-                extra={"template_id": tpl_id, "expires_at": body.expires_at, "uploaded_inline": True},
+                extra={"template_id": template_id, "expires_at": expires_at, "uploaded_inline": True},
             )
         ],
     }
     await db.hr_issuances.insert_one(iss_doc)
 
-    # In-app notification for the staff member (powers the bell on their Home tab)
+    # In-app notification for staff
     try:
         from server import notify
         await notify(
-            user_id=body.user_id,
-            title=f"Envelope to sign: {body.title.strip()}",
+            user_id=user["id"],
+            title=f"Envelope to sign: {title}",
             body=f"{current.get('name') or 'Admin'} sent you a document. Tap to read and sign.",
             kind="hr_envelope",
             related_id=iid,
@@ -288,7 +308,7 @@ async def hr_upload_and_issue(body: HRUploadIssueIn, request: Request, current=D
     except Exception:
         pass
 
-    # Best-effort push to staff member
+    # Best-effort push notification
     try:
         tok = user.get("expo_push_token")
         if tok:
@@ -296,41 +316,97 @@ async def hr_upload_and_issue(body: HRUploadIssueIn, request: Request, current=D
             await _send_expo_push(
                 [tok],
                 "HR envelope to sign",
-                f"{current.get('name') or 'Admin'} sent you: {body.title.strip()}",
+                f"{current.get('name') or 'Admin'} sent you: {title}",
                 data={"kind": "hr_issued", "issuance_id": iid},
             )
     except Exception:
         pass
-    # Best-effort email to staff member — deep-link straight to the envelope + ATTACH the full PDF
-    # (legal copy: staff receive the contract as a real PDF, signed copy goes to admin after signature)
-    try:
-        from server import _send_smtp_email
-        if user.get("email"):
-            deep_link = f"https://staff-scheduler-152.preview.emergentagent.com/forms?envelope={iid}"
-            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in body.title.strip())[:60]
-            attach_name = f"{safe}.pdf"
-            _send_smtp_email(
-                to_emails=[user["email"]],
-                subject=f"[StaffHub] Envelope to sign: {body.title.strip()}",
-                body_text=(
-                    f"Hi {user.get('name') or ''},\n\n"
-                    f"{current.get('name') or 'Admin'} sent you an envelope to sign: "
-                    f"{body.title.strip()}\n\n"
-                    f"The full document is attached to this email for your records.\n\n"
-                    f"{('Note: ' + body.message) if body.message else ''}\n\n"
-                    f"To sign electronically, open this link (log in first, it'll take you straight to the document):\n"
-                    f"{deep_link}\n\n"
-                    f"Or open StaffHub manually and go to:\n"
-                    f"  Forms tab → Envelopes sub-tab\n"
-                    f"  https://staff-scheduler-152.preview.emergentagent.com"
-                ),
-                attachment_bytes=pdf_bytes,
-                attachment_filename=attach_name,
-            )
-    except Exception:
-        pass
 
+    await _deliver_envelope_email(
+        user=user,
+        title=title,
+        message=message,
+        iid=iid,
+        pdf_bytes=pdf_bytes,
+        sender_name=current.get("name") or "Admin",
+    )
     return serialize(iss_doc)
+
+
+@router.post("/hr/envelopes/upload-and-issue")
+async def hr_upload_and_issue(body: HRUploadIssueIn, request: Request, current=Depends(require_admin)):
+    """One-shot DocuSign-style flow: upload a PDF + create a hidden template + issue it to one OR
+    many staff members in a single call. Auto-issues so the staff get the envelope immediately.
+
+    Stores the PDF as a `pdf_form_templates` row marked `category='hr_envelope'` so it doesn't
+    pollute the staff-facing PDF Forms list while still being signable through the existing flow."""
+    if not body.title or not body.title.strip():
+        raise HTTPException(status_code=400, detail="Title required")
+
+    # Resolve recipients (bulk takes precedence over legacy single user_id)
+    target_ids: List[str] = []
+    if body.user_ids:
+        target_ids = [uid for uid in body.user_ids if uid]
+    elif body.user_id:
+        target_ids = [body.user_id]
+    if not target_ids:
+        raise HTTPException(status_code=400, detail="At least one user_id is required")
+    # De-dupe while preserving order
+    seen = set()
+    target_ids = [uid for uid in target_ids if not (uid in seen or seen.add(uid))]
+
+    target_users: List[Dict[str, Any]] = []
+    for uid in target_ids:
+        u = await db.users.find_one({"id": uid})
+        if not u:
+            raise HTTPException(status_code=404, detail=f"User {uid} not found")
+        target_users.append(u)
+
+    _validate_iso_date(body.expires_at, "expires_at")
+    try:
+        pdf_bytes = base64.b64decode(body.pdf_base64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid PDF base64")
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Not a valid PDF")
+
+    title = body.title.strip()
+
+    # Create one shared template row (PDF stored once)
+    tpl_id = str(uuid.uuid4())
+    tpl_doc = {
+        "id": tpl_id,
+        "title": title,
+        "category": "hr_envelope",  # hidden from staff PDF Forms tab
+        "pdf_base64": body.pdf_base64,
+        "size": len(pdf_bytes),
+        "fields": [],
+        "field_count": 0,
+        "assigned_user_ids": target_ids,
+        "created_by": current["id"],
+        "created_by_name": current.get("name"),
+        "created_at": now_utc(),
+    }
+    await db.pdf_form_templates.insert_one(tpl_doc)
+
+    issued: List[Dict[str, Any]] = []
+    for user in target_users:
+        ser = await _create_envelope_for_user(
+            user=user,
+            template_id=tpl_id,
+            title=title,
+            expires_at=body.expires_at,
+            message=body.message,
+            current=current,
+            request=request,
+            pdf_bytes=pdf_bytes,
+        )
+        issued.append(ser)
+
+    # Backwards-compatible response: single recipient returns the old shape.
+    if len(issued) == 1:
+        return issued[0]
+    return {"count": len(issued), "issuances": issued}
 
 
 @router.get("/hr/issuances")
@@ -559,6 +635,106 @@ async def hr_cancel(iid: str, request: Request, current=Depends(require_admin)):
     )
     updated = await db.hr_issuances.find_one({"id": iid})
     return serialize(updated)
+
+
+@router.post("/hr/issuances/{iid}/resend")
+async def hr_resend(iid: str, request: Request, current=Depends(require_admin)):
+    """Re-send the envelope email to the assigned staff member with the original PDF attached.
+    Only allowed while the envelope is still pending/read (not signed/cancelled/expired)."""
+    doc = await db.hr_issuances.find_one({"id": iid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Issuance not found")
+    if doc.get("status") in ("signed", "cancelled", "expired"):
+        raise HTTPException(status_code=400, detail=f"Cannot resend a {doc.get('status')} envelope")
+
+    tpl = await db.pdf_form_templates.find_one({"id": doc.get("template_id")})
+    if not tpl or not tpl.get("pdf_base64"):
+        raise HTTPException(status_code=404, detail="Original PDF not found for this envelope")
+    try:
+        pdf_bytes = base64.b64decode(tpl["pdf_base64"])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Stored PDF is corrupted")
+
+    user = await db.users.find_one({"id": doc.get("user_id")})
+    if not user:
+        raise HTTPException(status_code=404, detail="Assigned user not found")
+
+    title = doc.get("template_title") or tpl.get("title") or "Document"
+    await _deliver_envelope_email(
+        user=user,
+        title=title,
+        message=doc.get("message") or None,
+        iid=iid,
+        pdf_bytes=pdf_bytes,
+        sender_name=current.get("name") or "Admin",
+        resend=True,
+    )
+
+    # Best-effort push as well
+    try:
+        tok = user.get("expo_push_token")
+        if tok:
+            from server import _send_expo_push
+            await _send_expo_push(
+                [tok],
+                "Reminder: HR envelope to sign",
+                f"Please sign: {title}",
+                data={"kind": "hr_issued", "issuance_id": iid},
+            )
+    except Exception:
+        pass
+
+    ev = _audit_event("resent", current["id"], current.get("name"), request)
+    await db.hr_issuances.update_one({"id": iid}, {"$push": {"audit": ev}})
+    updated = await db.hr_issuances.find_one({"id": iid})
+    ser = serialize(updated)
+    ser.pop("signed_pdf_base64", None)
+    ser.pop("signature_image_base64", None)
+    ser["has_signed_pdf"] = bool(updated.get("signed_pdf_base64"))
+    return ser
+
+
+@router.get("/hr/envelopes/summary")
+async def hr_envelopes_summary(_=Depends(require_admin)):
+    """Rollup counts across all envelopes (admin Envelopes tab badges).
+
+    Returns counts by status, plus an `overdue` count (pending/read with `expires_at` in the past
+    but still not yet swept by the daily expiry job) and a `stagnant` count (pending/read older
+    than 3 days — eligible for a reminder email)."""
+    from datetime import timedelta as _td
+    today = date.today().isoformat()
+    cutoff = (datetime.utcnow() - _td(days=3))
+    counts: Dict[str, int] = {"pending": 0, "read": 0, "signed": 0, "expired": 0, "cancelled": 0}
+    overdue = 0
+    stagnant = 0
+    total = 0
+    cursor = db.hr_issuances.find({})
+    async for d in cursor:
+        total += 1
+        st = d.get("status") or "pending"
+        counts[st] = counts.get(st, 0) + 1
+        if st in ("pending", "read"):
+            exp = d.get("expires_at")
+            if exp and exp < today:
+                overdue += 1
+            issued_at = d.get("issued_at")
+            try:
+                # issued_at can be a datetime or ISO string
+                if isinstance(issued_at, str):
+                    issued_dt = datetime.fromisoformat(issued_at.replace("Z", "+00:00"))
+                else:
+                    issued_dt = issued_at
+                if issued_dt and issued_dt.replace(tzinfo=None) < cutoff:
+                    stagnant += 1
+            except Exception:
+                pass
+    return {
+        "total": total,
+        "counts": counts,
+        "outstanding": counts.get("pending", 0) + counts.get("read", 0),
+        "overdue": overdue,
+        "stagnant": stagnant,
+    }
 
 
 @router.get("/hr/issuances/{iid}/pdf")

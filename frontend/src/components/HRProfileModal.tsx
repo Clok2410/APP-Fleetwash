@@ -104,6 +104,28 @@ export default function HRProfileModal({ visible, userId, onClose, onReload }: P
     ]);
   };
 
+  const resendIssuance = (iid: string, title: string) => {
+    Alert.alert(
+      "Resend envelope?",
+      `We'll re-email "${title}" to the staff member with the original PDF attached.`,
+      [
+        { text: "Not now", style: "cancel" },
+        {
+          text: "Resend",
+          onPress: async () => {
+            try {
+              await api.post(`/hr/issuances/${iid}/resend`);
+              await load();
+              Alert.alert("Resent", "The envelope email has been sent again.");
+            } catch (e: any) {
+              Alert.alert("Failed", e.response?.data?.detail || "Could not resend");
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const downloadPdf = async (i: any) => {
     try {
       const filename = `${(i.template_title || "doc").replace(/[^a-z0-9_-]+/gi, "_")}_${(i.user_name || "user").replace(/[^a-z0-9]+/gi, "_")}_signed.pdf`;
@@ -258,7 +280,15 @@ export default function HRProfileModal({ visible, userId, onClose, onReload }: P
                         </TouchableOpacity>
                       )}
                       {!["signed", "cancelled"].includes(i.status) && (
-                        <TouchableOpacity onPress={() => cancelIssuance(i.id)}>
+                        <TouchableOpacity
+                          onPress={() => resendIssuance(i.id, i.template_title)}
+                          testID={`hr-resend-${i.id}`}
+                        >
+                          <Feather name="send" size={14} color={colors.brand} />
+                        </TouchableOpacity>
+                      )}
+                      {!["signed", "cancelled"].includes(i.status) && (
+                        <TouchableOpacity onPress={() => cancelIssuance(i.id)} testID={`hr-cancel-${i.id}`}>
                           <Feather name="x-circle" size={14} color={colors.alert} />
                         </TouchableOpacity>
                       )}
