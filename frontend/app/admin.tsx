@@ -83,7 +83,7 @@ export default function AdminScreen() {
   const [hdType, setHdType] = useState<"annual" | "sick" | "unpaid" | "no_show">("annual");
 
   // Holiday list filter (click-through summary chips)
-  const [holidayFilter, setHolidayFilter] = useState<"all" | "annual" | "sick" | "unpaid" | "no_show" | "pending">("all");
+  const [holidayFilter, setHolidayFilter] = useState<"all" | "annual" | "sick" | "unpaid" | "no_show" | "pending" | "clashes">("all");
   // Hours Sheets list sort (click-through summary cells)
   const [hoursSort, setHoursSort] = useState<"name" | "total" | "net" | "accrued">("name");
 
@@ -1553,10 +1553,12 @@ export default function AdminScreen() {
                 sick: holidays.filter((h) => h.type === "sick").length,
                 unpaid: holidays.filter((h) => h.type === "unpaid").length,
                 no_show: holidays.filter((h) => h.type === "no_show").length,
+                clashes: holidays.filter((h) => Array.isArray(h.clashes_at_submission) && h.clashes_at_submission.length > 0).length,
               };
               const pills: { key: typeof holidayFilter; label: string; count: number; color: string }[] = [
                 { key: "all", label: "All", count: counts.all, color: colors.primary as any },
                 { key: "pending", label: "Pending", count: counts.pending, color: colors.brand },
+                { key: "clashes", label: "⚠ Clashes", count: counts.clashes, color: "#F59E0B" },
                 { key: "annual", label: "Annual", count: counts.annual, color: colors.success },
                 { key: "sick", label: "Sick", count: counts.sick, color: "#F59E0B" },
                 { key: "unpaid", label: "Unpaid", count: counts.unpaid, color: colors.textMuted as any },
@@ -1572,10 +1574,14 @@ export default function AdminScreen() {
                       style={[
                         styles.typeChip,
                         holidayFilter === p.key && { backgroundColor: p.color, borderColor: p.color },
+                        p.key === "clashes" && p.count > 0 && holidayFilter !== "clashes" && {
+                          borderColor: "#F59E0B",
+                          backgroundColor: "#FEF3C7",
+                        },
                       ]}
                     >
                       <Text style={{
-                        color: holidayFilter === p.key ? "#fff" : colors.primary,
+                        color: holidayFilter === p.key ? "#fff" : (p.key === "clashes" && p.count > 0 ? "#92400E" : colors.primary),
                         fontWeight: "700",
                         fontSize: 12,
                       }}>
@@ -1591,6 +1597,7 @@ export default function AdminScreen() {
               const filtered = holidays.filter((h) => {
                 if (holidayFilter === "all") return true;
                 if (holidayFilter === "pending") return h.status === "pending";
+                if (holidayFilter === "clashes") return Array.isArray(h.clashes_at_submission) && h.clashes_at_submission.length > 0;
                 return h.type === holidayFilter;
               });
               if (filtered.length === 0) {
@@ -1617,10 +1624,26 @@ export default function AdminScreen() {
                     {h.reason ? <Text style={typography.small}>{h.reason}</Text> : null}
                     <Text style={[typography.small, { marginTop: 4, fontWeight: "700" }]}>{h.status?.toUpperCase()}</Text>
                     {h.clashes_at_submission && h.clashes_at_submission.length > 0 && (
-                      <View style={{ marginTop: 4, padding: 6, backgroundColor: "#FEF3C7", borderRadius: 6, borderWidth: 1, borderColor: "#F59E0B" }}>
-                        <Text style={{ fontSize: 11, fontWeight: "700", color: "#92400E" }}>
-                          ⚠ Clashed at submission with {h.clashes_at_submission.length} other request{h.clashes_at_submission.length === 1 ? "" : "s"}: {h.clashes_at_submission.slice(0, 3).map((c: any) => c.user_name).join(", ")}{h.clashes_at_submission.length > 3 ? "…" : ""}
+                      <View style={{ marginTop: 4, padding: 8, backgroundColor: "#FEF3C7", borderRadius: 6, borderWidth: 1, borderColor: "#F59E0B" }}>
+                        <Text style={{ fontSize: 11, fontWeight: "800", color: "#92400E" }}>
+                          ⚠ Clashed with {h.clashes_at_submission.length} request{h.clashes_at_submission.length === 1 ? "" : "s"}:
                         </Text>
+                        {/* When the Clashes filter is active, show full detail; otherwise show a compact summary */}
+                        {holidayFilter === "clashes" ? (
+                          h.clashes_at_submission.map((c: any, i: number) => (
+                            <Text key={i} style={{ fontSize: 11, color: "#92400E", marginTop: 2 }}>
+                              • <Text style={{ fontWeight: "700" }}>{c.user_name}</Text>
+                              {" — "}{c.type === "no_show" ? "no-show" : c.type}, {c.status === "approved" ? "approved" : "pending"}
+                              {" · "}{c.start_date}{c.end_date !== c.start_date ? ` → ${c.end_date}` : ""}
+                            </Text>
+                          ))
+                        ) : (
+                          <Text style={{ fontSize: 11, color: "#92400E", marginTop: 2 }}>
+                            {h.clashes_at_submission.slice(0, 3).map((c: any) => c.user_name).join(", ")}
+                            {h.clashes_at_submission.length > 3 ? "…" : ""}
+                            <Text style={{ fontStyle: "italic" }}>  (tap ⚠ Clashes filter for detail)</Text>
+                          </Text>
+                        )}
                       </View>
                     )}
                     {h.status === "cancelled" && h.cancelled_by ? (
