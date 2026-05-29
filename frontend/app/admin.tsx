@@ -59,6 +59,7 @@ export default function AdminScreen() {
   const [rosterStartTime, setRosterStartTime] = useState("06:30");
   const [rosterNotify, setRosterNotify] = useState(true);
   const [rosterTemplates, setRosterTemplates] = useState<any[]>([]);
+  const [publishedRosters, setPublishedRosters] = useState<any[]>([]);
 
   // Deep-link: ?openRoster=1 (from Schedule tab AI banner) → jump to Shifts + open roster modal
   useEffect(() => {
@@ -990,6 +991,40 @@ export default function AdminScreen() {
     }
   };
 
+  // Published rosters list + delete
+  const loadPublishedRosters = useCallback(async () => {
+    try {
+      const { data } = await api.get("/published-rosters");
+      setPublishedRosters(Array.isArray(data) ? data : []);
+    } catch (_e) {
+      setPublishedRosters([]);
+    }
+  }, []);
+  const deletePublishedRoster = (r: any) => {
+    Alert.alert(
+      "Delete roster?",
+      `"${r.title || "Untitled"}" will be removed from every staff member's Schedule tab. This cannot be undone.`,
+      [
+        { text: "Keep", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await api.delete(`/published-rosters/${r.id}`);
+              await loadPublishedRosters();
+            } catch (e: any) {
+              Alert.alert("Delete failed", e.response?.data?.detail || "Try again");
+            }
+          },
+        },
+      ],
+    );
+  };
+  useEffect(() => {
+    if (tab === "shifts") loadPublishedRosters();
+  }, [tab, loadPublishedRosters]);
+
   const parseRoster = async () => {
     if (!rosterFile) return Alert.alert("Pick a PDF first");
     setRosterParsing(true);
@@ -1035,6 +1070,7 @@ export default function AdminScreen() {
       );
       setRosterFile(null);
       setRosterOpen(false);
+      loadPublishedRosters();
     } catch (e: any) {
       Alert.alert("Publish failed", e.response?.data?.detail || "Try again");
     } finally {
@@ -1758,6 +1794,48 @@ export default function AdminScreen() {
                 <Text style={styles.addCtaText}>Import Roster PDF</Text>
               </TouchableOpacity>
             </View>
+
+            {/* Published rosters — admin can retire old ones to keep the staff Schedule tab tidy */}
+            {publishedRosters.length > 0 && (
+              <>
+                <Text style={[typography.label, { marginTop: 12, marginBottom: 4 }]}>
+                  Published rosters ({publishedRosters.length})
+                </Text>
+                <Text style={[typography.small, { marginBottom: 6, color: colors.textMuted }]}>
+                  Latest one is what staff see by default. Delete old ones to keep the list tidy.
+                </Text>
+                {publishedRosters.map((r: any, i: number) => (
+                  <View key={r.id} style={styles.card} testID={`published-roster-${r.id}`}>
+                    <View style={[styles.smBtn, { backgroundColor: colors.brandSoft, width: 36, height: 36, borderRadius: 18 }]}>
+                      <Feather name="file-text" size={16} color={colors.brand} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Text style={{ fontWeight: "700", color: colors.primary }} numberOfLines={1}>
+                          {r.title || "Untitled"}
+                        </Text>
+                        {i === 0 && (
+                          <View style={{ backgroundColor: colors.success, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999 }}>
+                            <Text style={{ color: "#fff", fontSize: 9, fontWeight: "800" }}>LATEST</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={typography.small}>
+                        Published {r.published_at ? new Date(r.published_at).toLocaleString() : "—"}
+                        {r.published_by_name ? ` by ${r.published_by_name}` : ""}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      testID={`delete-roster-${r.id}`}
+                      onPress={() => deletePublishedRoster(r)}
+                      style={[styles.smBtn, { backgroundColor: colors.alert }]}
+                    >
+                      <Feather name="trash-2" size={14} color="#fff" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </>
+            )}
 
             {/* Pending swap requests */}
             {swaps.filter((s) => s.status === "pending").length > 0 && (
