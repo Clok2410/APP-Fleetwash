@@ -30,6 +30,14 @@ export default function AdminScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ openRoster?: string; tab?: string }>();
   const { user } = useAuth();
+  // Hydration guard — the static Expo Web export pre-renders /admin at BUILD time, but the screen
+  // uses `new Date()`, `localStorage`-backed auth and live API data which differ on the client.
+  // Render an empty shell at SSR time so React 18 hydration always matches; useEffect then mounts
+  // the real UI on the client. Eliminates React minified error #418 on first paint.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
   const [tab, setTab] = useState<"holidays" | "shifts" | "hours" | "forms" | "pdf-forms" | "users" | "depots" | "offsite" | "customers" | "hr">("holidays");
   const [holidays, setHolidays] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
@@ -1270,6 +1278,18 @@ export default function AdminScreen() {
   const offsiteCount = offsite.length;
   const staffCount = users.filter((u: any) => u.role !== "admin").length;
 
+  // SSR hydration guard: the static export pre-renders /admin at build time, but this screen reads
+  // `new Date()`, the auth token from storage and live API data. Returning an empty shell on the
+  // very first render (when `hydrated=false`) makes server-rendered HTML match client-rendered HTML
+  // and eliminates React minified error #418 on first paint.
+  if (!hydrated) {
+    return (
+      <SafeAreaView style={styles.safe} testID="admin-hydrating">
+        <View style={{ flex: 1, backgroundColor: colors.background }} />
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       {isDesktop ? (
@@ -1281,7 +1301,7 @@ export default function AdminScreen() {
               <View style={styles.logoMark}>
                 <Feather name="users" size={18} color="#fff" />
               </View>
-              {!sidebarCollapsed && <Text style={styles.logoText}>StaffHub</Text>}
+              {!sidebarCollapsed && <Text style={styles.logoText}>Fleetwash Hub</Text>}
             </View>
             <TouchableOpacity
               testID="toggle-sidebar"

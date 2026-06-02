@@ -53,7 +53,7 @@ export default function LoginScreen() {
           <Feather name="zap" size={28} color="#fff" />
         </View>
         <Text style={typography.label}>Workforce OS</Text>
-        <Text style={[typography.h1, { marginTop: 4 }]}>StaffHub.</Text>
+        <Text style={[typography.h1, { marginTop: 4 }]}>Fleetwash Hub.</Text>
         <Text style={[typography.body, { marginTop: 8 }]}>
           Clock in, manage shifts, share files, and complete forms — all in one place.
         </Text>

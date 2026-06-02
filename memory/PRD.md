@@ -1,4 +1,4 @@
-# StaffHub / FleetWash — Migration & Production-Prep PRD
+# Fleetwash Hub (formerly StaffHub / FleetWash) — Migration & Production-Prep PRD
 
 ## Original problem statement
 Migrate the existing Expo + FastAPI + MongoDB **StaffHub / FleetWash** app from
@@ -18,6 +18,9 @@ and **never wipe the production MongoDB data**.
 - Expo Router (`app/_layout`, `app/index`, `app/(tabs)/{home,schedule,drive,forms,profile}`, `app/admin`)
 - Cross-platform: web (`react-native-web`), iOS, Android
 - Served as static export (`expo export -p web`) from `dist/` by FastAPI in production
+- SSR hydration is gated by a `hydrated` flag in `_layout.tsx` and `admin.tsx` — the static
+  HTML shell renders empty, real UI mounts on the client after `useEffect`. This eliminates
+  React minified error #418 (Build-time vs client-time `new Date()` mismatches).
 
 ## Implemented (chronological)
 - **2026-05-22** — Repo clone, local-dev wiring, JWT, demo seed, /me/users verified
@@ -29,17 +32,20 @@ and **never wipe the production MongoDB data**.
   clickable status pills, dedicated Clashes filter
 - **mid-session** — HR DocuSign-style Envelopes: PDF upload + email delivery + read receipt
   + signed PDF email back + signed copy to staff
-- **2026-05-28** — HR Envelope enhancements complete:
-  - **Bulk send** (`user_ids: []`) to one shared template / one issuance per staff
-  - **Resend** endpoint (`POST /hr/issuances/{iid}/resend`) — re-attaches original PDF, blocks signed/cancelled/expired
-  - **Silent cancel** (no email side-effect, audit only)
-  - **Envelopes summary** rollup (`GET /hr/envelopes/summary`) — outstanding / pending / read / signed / overdue / stagnant
-  - **3-day stagnant reminder** APScheduler job (07:00 UTC daily, gated by `reminder_3d_stagnant` audit marker)
-  - **Admin UI**: rollup badges on Envelopes tab, multi-select picker + Select-all + filter in upload modal,
-    Resend/Cancel buttons on HR Profile drawer
-- **2026-05-28** — Holiday Calendar Legend: per-staff colour key chips + pending fallback chip on Holidays tab
+- **2026-05-28** — HR Envelope enhancements (bulk send, resend, silent cancel, status rollup,
+  3-day stagnant reminder via APScheduler)
+- **2026-05-28** — Holiday Calendar Legend: per-staff colour key chips + pending fallback chip
 - **2026-05-28** — Paul's account password reset to documented `Staff123!`
-- **2026-05-29** — **Delete Roster** button on admin Shifts tab: lists all published roster PDFs (newest first, LATEST badge on top), each with a destructive delete confirmation; refreshes after publish/delete
+- **2026-05-29** — Delete Roster button + list view on admin Shifts tab
+- **2026-06-02** — Manual lat/lng override field on Customer Site modal (Nominatim Eircode misses);
+  site cards now display coords or a "geofencing disabled" warning if missing
+- **2026-06-02** — React error #418 fix via SSR hydration shell in `_layout.tsx` and `admin.tsx`
+- **2026-06-02** — Rebrand: app name **Fleetwash Hub**, slug `fleetwash-hub`,
+  bundle `com.fleetwash.hub`. Real FleetWash logo wired as `icon.png` (1024×1024 on black),
+  `adaptive-icon.png`, `splash-image.png` (1242×2436), `favicon.png`. Sidebar + login screen
+  show new brand name.
+- **2026-06-02** — `docs/EAS_SETUP.md` written — one-page guide for `eas init`, build profiles,
+  store submission. User runs this from laptop when ready for iOS/Android binaries.
 
 Backend `/app/backend/tests/test_hr_envelopes.py` covers 16 scenarios incl. RBAC, bulk dedupe,
 silent cancel, resend state machine, summary shape. All passing.
@@ -55,19 +61,23 @@ silent cancel, resend state machine, summary shape. All passing.
 - [x] SMTP transactional email (Gmail App Password)
 - [x] HR Envelope enhancements (bulk / resend / cancel / summary / 3-day reminder)
 - [x] Holiday calendar legend
+- [x] Delete Roster button
+- [x] Manual lat/lng override on Customer Site modal
+- [x] React #418 hydration warning fixed
+- [x] App rebranded to "Fleetwash Hub" with real logo icon/splash/favicon
 
 ## P1 — Next up
-- [ ] Manual lat/lng fallback field in Customer Site modal (Nominatim ~5–10% Eircode misses)
-- [ ] EAS account login + `eas build:configure` → fill `extra.eas.projectId`
-- [ ] Real app icons / splash images
-- [ ] Investigate React error #418 hydration warning on /admin first paint (cosmetic)
+- [ ] EAS account login + `eas init` from user's laptop → fills `extra.eas.projectId` in `app.json`
+  (see `docs/EAS_SETUP.md` — user-runnable, 2 minutes)
+- [ ] Apple Developer + Google Play enrollment + first store build via `eas build`
 
 ## P2 — Backlog
-- [ ] Split `admin.tsx` (4856 lines) and `routers/hr.py` (878 lines) into per-tab/per-feature modules
+- [ ] Split `admin.tsx` (~5000 lines) and `routers/hr.py` (~880 lines) into per-tab/per-feature modules
 - [ ] FCM/APNs server keys for push notifications (scaffold already in `src/push.ts`)
 - [ ] Apple Developer + Google Play enrollment for store submission
 - [ ] Resend API key to un-mock the *weekly digest* (transactional already on SMTP)
 - [ ] Audit-trail filtering UI on HR Profile drawer (filter by event kind / date range)
+- [ ] Roster history "trash" / undo (30-day soft delete)
 
 ## Currently MOCKED
 - Weekly digest emails fall back to log line when `RESEND_API_KEY` is unset

@@ -1,29 +1,29 @@
 {
   "expo": {
-    "name": "StaffHub",
-    "slug": "staffhub-fleetwash",
+    "name": "Fleetwash Hub",
+    "slug": "fleetwash-hub",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "staffhub",
+    "scheme": "fleetwashhub",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.fleetwash.staffhub",
+      "bundleIdentifier": "com.fleetwash.hub",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "StaffHub uses your location to verify clock-ins are on-site.",
-        "NSCameraUsageDescription": "StaffHub uses the camera to capture photos for forms and documents.",
-        "NSPhotoLibraryUsageDescription": "StaffHub accesses your photos to attach images to forms."
+        "NSLocationWhenInUseUsageDescription": "Fleetwash Hub uses your location to verify clock-ins are on-site.",
+        "NSCameraUsageDescription": "Fleetwash Hub uses the camera to capture photos for forms and documents.",
+        "NSPhotoLibraryUsageDescription": "Fleetwash Hub accesses your photos to attach images to forms."
       }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000"
+        "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.fleetwash.staffhub",
+      "package": "com.fleetwash.hub",
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
@@ -42,16 +42,16 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
+          "image": "./assets/images/splash-image.png",
+          "imageWidth": 220,
           "resizeMode": "contain",
-          "backgroundColor": "#000"
+          "backgroundColor": "#000000"
         }
       ],
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "StaffHub uses your location to verify clock-ins are on-site."
+          "locationAlwaysAndWhenInUsePermission": "Fleetwash Hub uses your location to verify clock-ins are on-site."
         }
       ]
     ],

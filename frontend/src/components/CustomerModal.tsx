@@ -48,6 +48,8 @@ export default function CustomerModal({ customerId, onClose }: Props) {
   const [addSAddr, setAddSAddr] = useState("");
   const [addSEircode, setAddSEircode] = useState("");
   const [addSDesc, setAddSDesc] = useState("");
+  const [addSLat, setAddSLat] = useState("");
+  const [addSLng, setAddSLng] = useState("");
 
   // A4: Admin profile edit
   const [editProfile, setEditProfile] = useState(false);
@@ -128,10 +130,28 @@ export default function CustomerModal({ customerId, onClose }: Props) {
 
   const addSite = async () => {
     if (!addSName) return Alert.alert("Name required");
-    await api.post(`/customers/${customerId}/sites`, {
-      name: addSName, address: addSAddr, eircode: addSEircode, description: addSDesc,
-    });
+    const payload: any = {
+      name: addSName,
+      address: addSAddr,
+      eircode: addSEircode,
+      description: addSDesc,
+    };
+    // Optional manual override for Nominatim — used when an Eircode resolves to the wrong spot
+    const latNum = addSLat.trim() ? parseFloat(addSLat.trim()) : NaN;
+    const lngNum = addSLng.trim() ? parseFloat(addSLng.trim()) : NaN;
+    if (addSLat.trim() || addSLng.trim()) {
+      if (Number.isNaN(latNum) || Number.isNaN(lngNum)) {
+        return Alert.alert("Invalid coordinates", "Enter BOTH latitude and longitude as numbers (e.g. 53.3498, -6.2603) or leave both empty to auto-geocode.");
+      }
+      if (latNum < -90 || latNum > 90 || lngNum < -180 || lngNum > 180) {
+        return Alert.alert("Out of range", "Latitude must be between -90 and 90, longitude between -180 and 180.");
+      }
+      payload.lat = latNum;
+      payload.lng = lngNum;
+    }
+    await api.post(`/customers/${customerId}/sites`, payload);
     setAddSName(""); setAddSAddr(""); setAddSEircode(""); setAddSDesc("");
+    setAddSLat(""); setAddSLng("");
     await load();
   };
 
@@ -320,6 +340,15 @@ export default function CustomerModal({ customerId, onClose }: Props) {
                       </Text>
                     ) : null}
                     {st.description ? <Text style={typography.small}>{st.description}</Text> : null}
+                    {(st.lat != null && st.lng != null) ? (
+                      <Text style={[typography.small, { color: colors.textMuted, fontSize: 11 }]} testID={`site-coords-${st.id}`}>
+                        <Feather name="crosshair" size={10} color={colors.textMuted} /> {Number(st.lat).toFixed(5)}, {Number(st.lng).toFixed(5)}
+                      </Text>
+                    ) : (
+                      <Text style={[typography.small, { color: colors.alert, fontSize: 11 }]} testID={`site-coords-missing-${st.id}`}>
+                        <Feather name="alert-triangle" size={10} color={colors.alert} /> No coordinates — geofencing disabled
+                      </Text>
+                    )}
                     {(st.eircode || st.address) ? (
                       <TouchableOpacity
                         testID={`site-maps-${st.id}`}
@@ -346,6 +375,30 @@ export default function CustomerModal({ customerId, onClose }: Props) {
                   <TextInput style={s.input} placeholder="Address" value={addSAddr} onChangeText={setAddSAddr} placeholderTextColor={colors.textMuted} />
                   <TextInput testID="add-site-eircode" style={s.input} placeholder="Eircode (e.g. D02 X285)" value={addSEircode} onChangeText={setAddSEircode} autoCapitalize="characters" placeholderTextColor={colors.textMuted} />
                   <TextInput style={s.input} placeholder="Notes / description" value={addSDesc} onChangeText={setAddSDesc} placeholderTextColor={colors.textMuted} />
+                  <Text style={[typography.small, { color: colors.textMuted, marginTop: 2 }]}>
+                    Optional — override Nominatim if it picks the wrong spot for a precise Eircode.{"\n"}
+                    Tip: open Google Maps, right-click the exact pin, copy both numbers.
+                  </Text>
+                  <View style={{ flexDirection: "row", gap: 6 }}>
+                    <TextInput
+                      testID="add-site-lat"
+                      style={[s.input, { flex: 1 }]}
+                      placeholder="Lat (e.g. 53.34980)"
+                      value={addSLat}
+                      onChangeText={setAddSLat}
+                      keyboardType="numbers-and-punctuation"
+                      placeholderTextColor={colors.textMuted}
+                    />
+                    <TextInput
+                      testID="add-site-lng"
+                      style={[s.input, { flex: 1 }]}
+                      placeholder="Lng (e.g. -6.26030)"
+                      value={addSLng}
+                      onChangeText={setAddSLng}
+                      keyboardType="numbers-and-punctuation"
+                      placeholderTextColor={colors.textMuted}
+                    />
+                  </View>
                   <TouchableOpacity testID="add-site-submit" style={s.btnGhost} onPress={addSite}>
                     <Text style={s.btnGhostText}>+ Add Site</Text>
                   </TouchableOpacity>
