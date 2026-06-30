@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
-import { api, setToken, getToken, formatApiError } from "./api";
+import { api, setToken, setRefreshToken, getToken, formatApiError, setOnForceLogout } from "./api";
 import { registerForPushAsync, unregisterPush } from "./push";
 
 export type User = {
@@ -33,19 +33,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(data);
       registerForPushAsync().catch(() => {});
     } catch {
+      // The axios interceptor already tried to refresh; if /auth/me still fails,
+      // both tokens are dead → fully log out.
       await setToken(null);
+      await setRefreshToken(null);
       setUser(null);
     }
   };
 
   useEffect(() => {
+    // Register the force-logout hook so the API interceptor can clear React state
+    // when refresh-token exchange itself fails.
+    setOnForceLogout(() => {
+      setUser(null);
+    });
     refresh();
+    return () => { setOnForceLogout(null); };
   }, []);
 
   const login = async (email: string, password: string) => {
     try {
       const { data } = await api.post("/auth/login", { email, password });
       await setToken(data.access_token);
+      if (data.refresh_token) await setRefreshToken(data.refresh_token);
       setUser(data.user);
       registerForPushAsync().catch(() => {});
     } catch (e: any) {
@@ -56,6 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = async () => {
     try { await unregisterPush(); } catch {}
     await setToken(null);
+    await setRefreshToken(null);
     setUser(null);
   };
 

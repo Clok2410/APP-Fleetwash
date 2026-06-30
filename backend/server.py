@@ -27,6 +27,8 @@ from deps import (
     now_utc,
     get_jwt_secret,
     create_access_token,
+    create_refresh_token,
+    decode_refresh_token,
     serialize,
     get_current_user,
     require_admin,
@@ -250,8 +252,34 @@ async def login(body: LoginIn):
     if not user.get("active", True):
         raise HTTPException(status_code=403, detail="Account deactivated")
     token = create_access_token(user["id"], user["email"], user.get("role", "staff"))
+    refresh = create_refresh_token(user["id"], user["email"], user.get("role", "staff"))
     user.pop("password_hash", None)
-    return {"access_token": token, "token_type": "bearer", "user": serialize(user)}
+    return {
+        "access_token": token,
+        "refresh_token": refresh,
+        "token_type": "bearer",
+        "user": serialize(user),
+    }
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str
+
+
+@api.post("/auth/refresh")
+async def refresh_access_token(body: RefreshIn):
+    """Exchange a valid refresh token for a fresh access token.
+    Refresh tokens last 30 days; access tokens last 1 hour. Frontend should call
+    this when an API request returns 401 due to expired access token."""
+    payload = decode_refresh_token(body.refresh_token)
+    # Verify user still exists & is active
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not user.get("active", True):
+        raise HTTPException(status_code=403, detail="Account deactivated")
+    token = create_access_token(user["id"], user["email"], user.get("role", "staff"))
+    return {"access_token": token, "token_type": "bearer"}
 
 
 @api.get("/auth/me")

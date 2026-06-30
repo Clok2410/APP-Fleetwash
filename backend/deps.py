@@ -50,14 +50,40 @@ def get_jwt_secret() -> str:
 
 
 def create_access_token(user_id: str, email: str, role: str) -> str:
+    """Short-lived access token (1 hour) — sent on every API request."""
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
-        "exp": now_utc() + timedelta(hours=12),
+        "exp": now_utc() + timedelta(hours=1),
         "type": "access",
     }
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+def create_refresh_token(user_id: str, email: str, role: str) -> str:
+    """Long-lived refresh token (30 days) — exchanged for a new access token at /auth/refresh."""
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "role": role,
+        "exp": now_utc() + timedelta(days=30),
+        "type": "refresh",
+    }
+    return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+def decode_refresh_token(token: str) -> dict:
+    """Decode + validate a refresh token; raises HTTPException(401) on any failure."""
+    try:
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Not a refresh token")
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
 
 
 def serialize(doc: Optional[dict]) -> Optional[dict]:
@@ -127,6 +153,8 @@ __all__ = [
     "now_utc",
     "get_jwt_secret",
     "create_access_token",
+    "create_refresh_token",
+    "decode_refresh_token",
     "serialize",
     "get_current_user",
     "require_admin",
