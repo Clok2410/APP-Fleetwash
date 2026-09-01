@@ -91,6 +91,15 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
         } else if (templateId) {
           const { data } = await api.get(`/pdf-forms/templates/${templateId}`);
           setTpl(data);
+          // eslint-disable-next-line no-console
+          console.log("[PdfForm] tpl loaded (direct):", {
+            id: data?.id,
+            title: data?.title,
+            fieldCount: (data?.fields || []).length,
+            withRect: (data?.fields || []).filter((f: any) => f.rect).length,
+            pdfSize: (data?.pdf_base64 || "").length,
+            hasAcroform: data?.has_acroform,
+          });
           const init: Record<string, any> = {};
           (data.fields || []).forEach((f: PdfField) => {
             if (f.type === "checkbox") init[f.name] = false;
@@ -99,7 +108,12 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
           setValues(init);
         }
       } catch (e: any) {
-        Alert.alert("Error", e.response?.data?.detail || "Could not load");
+        const detail = e.response?.data?.detail || e.message || "Could not load";
+        // eslint-disable-next-line no-console
+        console.error("[PdfForm] load failed:", detail, e);
+        // Show error inline in the modal AND via Alert (some browsers block Alert)
+        setTpl({ __error: detail });
+        Alert.alert("Could not open form", String(detail));
       } finally {
         setLoading(false);
       }
@@ -283,6 +297,35 @@ export default function PdfFormFillModal({ templateId, sessionId, isAdmin, onClo
         {loading ? (
           <View style={styles.center}>
             <ActivityIndicator color={colors.primary} />
+            <Text style={[typography.small, { marginTop: 8, color: colors.textMuted }]}>
+              Loading PDF form…
+            </Text>
+          </View>
+        ) : tpl?.__error ? (
+          <View style={{ padding: spacing.lg }}>
+            <View style={[styles.warn, { backgroundColor: "#FEE2E2", borderColor: "#FCA5A5" }]}>
+              <Feather name="alert-octagon" size={16} color="#B91C1C" />
+              <Text style={{ color: "#7F1D1D", marginLeft: 8, flex: 1, fontWeight: "600" }}>
+                Could not load this form: {String(tpl.__error)}
+              </Text>
+            </View>
+            <Text style={[typography.small, { marginTop: 12, color: colors.textMuted }]}>
+              This usually means the backend API is unreachable or the template was deleted.
+              Ask your admin to check the server status, then close and try again.
+            </Text>
+            <TouchableOpacity
+              onPress={close}
+              style={{
+                marginTop: 16,
+                alignSelf: "flex-start",
+                paddingHorizontal: 20,
+                paddingVertical: 10,
+                borderRadius: 999,
+                backgroundColor: colors.primary,
+              }}
+            >
+              <Text style={{ color: "#fff", fontWeight: "700" }}>Close</Text>
+            </TouchableOpacity>
           </View>
         ) : tpl ? (
           <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 40 }}>
